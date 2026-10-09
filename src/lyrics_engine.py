@@ -118,8 +118,9 @@ def parse_plain_lyrics(content: str, audio_duration: float = 180.0,
         return []
 
     n = len(lines)
+    line_dur = max(4.0, audio_duration / max(1, n))
 
-    if beat_times and len(beat_times) > n:
+    if beat_times is not None and len(beat_times) > n:
         # Align to beats — pick evenly spaced beats
         step = len(beat_times) / n
         for i, line in enumerate(lines):
