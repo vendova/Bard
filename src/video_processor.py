@@ -376,7 +376,10 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                       lossless_mode: bool = False, use_gpu: bool = False, 
                       gpu_encoder: str = 'h264_nvenc', fps: float = None,
                       effects_config: EffectsConfig = None,
-                      smart_sync: bool = False) -> str:
+                      smart_sync: bool = False,
+                      variation_seed: int = None,
+                      transition_preset_name: str = "",
+                      ) -> str:
     """
     Creates a music video with video clips cut to detected beats.
     
@@ -503,6 +506,12 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
     smart_transitions_list: List[str] = []
     smart_effect_overrides: List[Dict] = []
 
+    # Generate a variation seed if not provided — each render gets a unique
+    # seed so clicking "Create" again produces different results.
+    if variation_seed is None:
+        variation_seed = int(time.time() * 1000) % (2**31)
+    print(f"🎲 Variation seed: {variation_seed}")
+
     if smart_sync:
         # ── Smart Sync mode: AI-driven energy matching ──
         print(f"\n{'='*60}")
@@ -518,8 +527,35 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         candidates = list(video_analysis.get("candidates") or [])
         candidates = [c for c in candidates if c.get("video_file")]
 
+        # Inject variation seed into smart_sync by patching _stable_rng
+        import smart_sync as _ss
+        _orig_stable_rng = _ss._stable_rng
+        _seeded_rng = random.Random(variation_seed)
+
+        def _seeded_stable_rng(*parts):
+            base = _orig_stable_rng(*parts)
+            # Mix in the variation seed for different results each render
+            return random.Random(variation_seed + base.randint(0, 2**30))
+        _ss._stable_rng = _seeded_stable_rng
+
         planned_clip_sequence, smart_transitions_list, smart_effect_overrides = \
             build_smart_sync_plan(profiles, candidates, video_files, beat_info)
+
+        # Restore original
+        _ss._stable_rng = _orig_stable_rng
+
+        # Override transitions with the selected preset if specified
+        if transition_preset_name and planned_clip_sequence:
+            from transition_presets import get_preset_by_name
+            from lyrics_engine import build_smart_transitions_with_preset
+            preset = get_preset_by_name(transition_preset_name)
+            t_rng = random.Random(variation_seed + 42)
+            smart_transitions_list, _t_durs = build_smart_transitions_with_preset(
+                profiles, preset, t_rng)
+            from collections import Counter
+            tmix = Counter(smart_transitions_list)
+            print(f"   🎭 Transition preset: {preset.name}")
+            print(f"   Smart transitions: {', '.join(f'{t}×{c}' for t, c in tmix.items())}")
 
         if planned_clip_sequence:
             plan_summary = summarize_clip_plan(planned_clip_sequence)
@@ -533,7 +569,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             print(f"   ✓ {plan_summary['clip_count']} clips assigned (energy-match error: {match_err:.3f})")
             print(f"   Sources used: {plan_summary.get('source_count', 0)}")
             print(f"   Targets: {plan_summary.get('targets', {})}")
-            if smart_transitions_list:
+            if smart_transitions_list and not transition_preset_name:
                 from collections import Counter
                 tmix = Counter(smart_transitions_list)
                 print(f"   Smart transitions: {', '.join(f'{t}×{c}' for t, c in tmix.items())}")

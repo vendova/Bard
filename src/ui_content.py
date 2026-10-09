@@ -349,6 +349,16 @@ INFO_EFFECTS_ENABLED = "Master toggle for all effect controls below"
 LABEL_SMART_SYNC = "🧠 Smart Sync (AI Energy Matching)"
 INFO_SMART_SYNC = "Shuffles clips to match beat energy, picks transitions per cut, and scales effects dynamically"
 
+LABEL_LYRICS = "🎤 Lyrics Overlay"
+INFO_LYRICS = "Paste song lyrics (any language). Auto-transliterates to English and syncs to beats"
+LABEL_LYRICS_TEXT = "Song Lyrics (plain text or LRC with timestamps)"
+INFO_LYRICS_TEXT = "Supports LRC [mm:ss.xx] timestamps or plain text (auto-distributed). Any language → English transliteration"
+LABEL_FONT_COMBO = "Font Style Combo (100 presets)"
+INFO_FONT_COMBO = "Select a font combo for the lyrics overlay. Each combo pairs primary + secondary fonts with animations"
+LABEL_TRANSITION_PRESET = "Transition Preset (100 combos)"
+INFO_TRANSITION_PRESET = "Select a named transition preset for Smart Sync per-cut transitions. 'Random' picks a new one each render"
+LABEL_LYRICS_SECTION = "🎤 Lyrics & Fonts"
+
 LABEL_GRADIENT_OVERLAY = "🌈 Gradient Color Overlay"
 INFO_GRADIENT_OVERLAY = "Subtle color wash overlay on clips"
 

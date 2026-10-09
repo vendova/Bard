@@ -109,6 +109,13 @@ gpu_info = f"{gpu_data['name']} ({gpu_data['cuda_version']})" if gpu_data['avail
 from video_processor import create_music_video
 from video_effects import EffectsConfig, parse_effects_from_ui, TRANSITION_TYPES
 
+from font_presets import get_combo_names as _get_font_combo_names
+from transition_presets import get_preset_names as _get_transition_preset_names
+
+# Build UI dropdown choices with a "Random" option at top
+_FONT_COMBO_CHOICES = [("🎲 Random (new combo each render)", "")] + [(n, n) for n in _get_font_combo_names()]
+_TRANSITION_PRESET_CHOICES = [("🎲 Random (new preset each render)", "")] + [(n, n) for n in _get_transition_preset_names()]
+
 from auto_mode import analyze_beats_auto
 
 # Import UI content
@@ -356,6 +363,9 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        custom_fps: float, session_state: dict,
                        effects_config: EffectsConfig = None,
                        smart_sync: bool = False,
+                       lyrics_text: str = "",
+                       font_combo_name: str = "",
+                       transition_preset_name: str = "",
                        progress_callback: Callable[[str], None] | None = None,
                        console_logger: StageConsoleLogger | None = None) -> StatusResult:
     total_started = time.perf_counter()
@@ -453,7 +463,57 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             use_gpu=use_gpu, gpu_encoder=gpu_encoder, fps=output_fps,
             effects_config=effects_config,
             smart_sync=smart_sync,
+            transition_preset_name=transition_preset_name,
         )
+
+        # ── Lyrics overlay ─────────────────────────────────────────────
+        # If lyrics text was provided, generate an ASS subtitle file and
+        # burn it into the rendered video with the selected font combo.
+        if lyrics_text and lyrics_text.strip():
+            try:
+                from lyrics_engine import process_lyrics, burn_lyrics_into_video
+                from font_presets import FONTS_DIR as _fd
+                from ffmpeg_processing import get_video_resolution
+
+                audio_dur = beat_info.get('audio_duration', 180.0)
+                vid_w, vid_h = get_video_resolution(result_path)
+
+                console_logger.line(f"🎤 Processing lyrics: {len(lyrics_text)} chars")
+
+                ass_path, _lines, _combo = process_lyrics(
+                    lyrics_text=lyrics_text,
+                    audio_duration=audio_dur,
+                    beat_times=beat_times,
+                    font_combo_name=font_combo_name,
+                    video_width=vid_w,
+                    video_height=vid_h,
+                    fps=output_fps,
+                    output_dir=session_dir,
+                )
+
+                if ass_path and os.path.exists(ass_path):
+                    lyrics_output = os.path.join(session_dir, f"lyrics_{timestamp}.mp4")
+                    burn_lyrics_into_video(
+                        video_file=result_path,
+                        ass_file=ass_path,
+                        output_file=lyrics_output,
+                        fonts_dir=_fd,
+                        use_nvenc=use_nvenc and NVENC_AVAILABLE,
+                        gpu_encoder=gpu_encoder,
+                        fps=output_fps,
+                    )
+                    # Replace the original output with the lyrics version
+                    if os.path.exists(lyrics_output) and os.path.getsize(lyrics_output) > 1000:
+                        try:
+                            os.remove(result_path)
+                        except OSError:
+                            pass
+                        result_path = lyrics_output
+                        console_logger.line(f"✓ Lyrics overlay applied: {_combo.name}")
+                    else:
+                        console_logger.line("⚠️  Lyrics overlay failed; using video without lyrics")
+            except Exception as lyrics_err:
+                console_logger.line(f"⚠️  Lyrics processing skipped: {lyrics_err}")
 
         # Move to output folder
         shutil.move(result_path, output_path)
@@ -620,12 +680,26 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  glitch_strength: float = 0.3,
                  slow_motion_probability: float = 0.15,
                  smart_sync: bool = False,
+                 lyrics_text: str = "",
+                 font_combo_name: str = "",
+                 transition_preset_name: str = "",
                  ) -> Iterator[StatusResult]:
     status_queue: queue.Queue[str | None] = queue.Queue()
     result_queue: queue.Queue[StatusResult] = queue.Queue(maxsize=1)
     initial_status = _stage_status(1)
     console_logger = StageConsoleLogger(sys.__stdout__)
     quiet_console = QuietConsole()
+
+    # Resolve "Random" selections — pick a random font combo and/or
+    # transition preset so each render produces different results.
+    if not font_combo_name:
+        import random as _rng
+        from font_presets import get_random_combo as _grc
+        font_combo_name = _grc(_rng.Random()).name
+    if not transition_preset_name:
+        import random as _rng2
+        from transition_presets import get_random_preset as _grp
+        transition_preset_name = _grp(_rng2.Random()).name
 
     def progress_callback(message: str) -> None:
         status_queue.put(message)
@@ -667,6 +741,9 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                     session_state=session_state,
                     effects_config=effects_config,
                     smart_sync=smart_sync,
+                    lyrics_text=lyrics_text,
+                    font_combo_name=font_combo_name,
+                    transition_preset_name=transition_preset_name,
                     progress_callback=progress_callback,
                     console_logger=console_logger,
                 )
@@ -810,6 +887,28 @@ def create_ui() -> gr.Blocks:
                             glitch_strength = gr.Slider(0.05, 1.0, value=0.3, step=0.05, label=LABEL_GLITCH_STRENGTH)
                         slow_motion_probability = gr.Slider(0.0, 1.0, value=0.15, step=0.05, label=LABEL_SLOW_MOTION_PROBABILITY)
 
+                with gr.Accordion(LABEL_LYRICS_SECTION, open=False):
+                    lyrics_text = gr.Textbox(
+                        label=LABEL_LYRICS_TEXT,
+                        info=INFO_LYRICS_TEXT,
+                        placeholder="Paste song lyrics here...\n\nSupports:\n• Plain text (auto-distributed across song)\n• LRC format: [00:05.00] First line here\n• Any language → auto-transliterated to English",
+                        lines=8,
+                        max_lines=20,
+                    )
+                    with gr.Row():
+                        font_combo = gr.Dropdown(
+                            choices=_FONT_COMBO_CHOICES,
+                            value="",
+                            label=LABEL_FONT_COMBO,
+                            info=INFO_FONT_COMBO,
+                        )
+                        transition_preset = gr.Dropdown(
+                            choices=_TRANSITION_PRESET_CHOICES,
+                            value="",
+                            label=LABEL_TRANSITION_PRESET,
+                            info=INFO_TRANSITION_PRESET,
+                        )
+
                 process_btn = gr.Button('🎬 Create Music Video', variant='primary', size='lg')
 
             with gr.Column(scale=1):
@@ -834,6 +933,9 @@ def create_ui() -> gr.Blocks:
                 color_boost_amount, glitch_strength,
                 slow_motion_probability,
                 smart_sync_enabled,
+                lyrics_text,
+                font_combo,
+                transition_preset,
             ],
             outputs=[video_output, status_output, session_state, download_btn],
             show_progress='hidden'
