@@ -1,0 +1,31 @@
+# Render Blueprint for BeatSync-Engine
+# Deploy with: render blueprint deploy (or connect repo in dashboard)
+#
+# Free plan notes:
+#   • 512 MB RAM — enough for short clips; long renders may OOM.
+#   • CPU only   — no GPU/NVENC; ffmpeg uses libx264 (CPU).
+#   • Ephemeral disk — output files are lost on redeploy/sleep.
+#   • Sleeps after 15 min inactivity (~30s cold start).
+
+services:
+  - type: web
+    name: beatsync-engine
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: PYTHONIOENCODING
+        value: utf-8
+      - key: PYTHONUTF8
+        value: "1"
+      # PORT is injected automatically by Render — do not set it here.
+      # Gradio binds to 0.0.0.0 via GRADIO_SERVER_NAME (set in Dockerfile).
+    disk:
+      name: beatsync-output
+      mountPath: /app/output
+      sizeGB: 1

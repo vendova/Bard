@@ -323,12 +323,14 @@ def _stage6_summary(console_logger: StageConsoleLogger | None, beat_info: Dict |
 
 def find_launch_port(default_port: int = 7860, search_limit: int = 20) -> int:
     """Prefer the default Gradio port, then step forward if it is busy."""
-    env_port = os.environ.get("GRADIO_SERVER_PORT")
-    if env_port:
-        try:
-            return int(env_port)
-        except ValueError:
-            print(f"⚠️ Invalid GRADIO_SERVER_PORT={env_port!r}; using auto port search.")
+    # Render and most PaaS providers set PORT; respect it above all else.
+    for env_var in ("GRADIO_SERVER_PORT", "PORT"):
+        env_port = os.environ.get(env_var)
+        if env_port:
+            try:
+                return int(env_port)
+            except ValueError:
+                print(f"⚠️ Invalid {env_var}={env_port!r}; using auto port search.")
 
     for port in range(default_port, default_port + search_limit):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -961,7 +963,7 @@ if __name__ == '__main__':
     app = create_ui()
     launch_port = find_launch_port()
     app.launch(
-        server_name=os.environ.get("GRADIO_SERVER_NAME", "127.0.0.1"),
+        server_name=os.environ.get("GRADIO_SERVER_NAME", "0.0.0.0"),
         server_port=launch_port,
         share=False,
         inbrowser=bool(os.environ.get("GRADIO_INBROWSER", "")),

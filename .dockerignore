@@ -1,0 +1,19 @@
+# Exclude files not needed in the Docker image to keep builds fast.
+
+bin/
+output/
+input/
+*.log
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+.vscode/
+.idea/
+*.md
+*.bat
+run.bat
+install.bat
+requirements.txt
+.dockerignore
