@@ -83,7 +83,7 @@ import socket
 from typing import Callable, Iterator, TypeAlias, Tuple, Dict, List
 
 # Import FFmpeg processing module
-from ffmpeg_processing import get_video_fps, FFMPEG_PATH, compress_video_to_target_size
+from ffmpeg_processing import get_video_fps, FFMPEG_PATH, compress_video_to_target_size, optimize_for_web
 
 # Shared runtime settings
 from gpu_cpu_utils import (
@@ -118,7 +118,7 @@ from ui_content import *
 os.environ['GRADIO_TEMP_DIR'] = GRADIO_TEMP_DIR
 
 VideoFilesInput : TypeAlias = List[str]
-StatusResult : TypeAlias = Tuple[str, str, Dict]
+StatusResult : TypeAlias = Tuple[str, str, Dict, object]
 
 STATUS_BOX_CSS = """
 #status-output-box {
@@ -509,12 +509,54 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                 preview_cmd.extend(['-hwaccel', 'auto', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23'])
             preview_cmd.extend(['-i', output_path, '-pix_fmt', 'yuv420p', '-y', preview_path])
             subprocess.run(preview_cmd, capture_output=True, text=True, timeout=180)
+
+        # ── Web optimisation pass ────────────────────────────────────
+        # Always produce a browser-ready MP4 so the output downloads fast
+        # and plays instantly in the Gradio <video> component:
+        #   • H.264 High + AAC in MP4
+        #   • moov atom at front (+faststart → progressive download)
+        #   • 2-second GOP for smooth seeking
+        #   • scaled to ≤1920px wide (keeps full HD, shrinks 4K sources)
+        #
+        # For ProRes mode we optimise the preview; for H.264 mode we
+        # optimise the final output directly.  The optimised file replaces
+        # what is served to the user.
+        web_src = preview_path if is_prores else output_path
+        if not web_src.lower().endswith('.mp4') or is_prores:
+            web_name = f"{name}_{timestamp}_web.mp4"
+            web_path = os.path.join(session_dir, web_name)
+            try:
+                optimize_for_web(
+                    input_file=web_src,
+                    output_file=web_path,
+                    fps=output_fps,
+                    use_nvenc=use_nvenc and NVENC_AVAILABLE,
+                    gpu_encoder=gpu_encoder,
+                )
+                # Move the web-optimised file to the output folder and use it
+                final_web = os.path.join(output_folder, web_name)
+                shutil.move(web_path, final_web)
+                preview_path = final_web
+                # For non-ProRes, replace the main output too
+                if not is_prores:
+                    try:
+                        os.remove(output_path)
+                    except OSError:
+                        pass
+                    output_path = final_web
+                    filename = web_name
+                console_logger.line(
+                    f"🌐 Web-optimised: {os.path.getsize(final_web) / 1048576:.1f} MB "
+                    f"(faststart + AAC + 2s GOP)"
+                )
+            except Exception as web_err:
+                console_logger.line(f"⚠️  Web optimisation skipped: {web_err}")
         _stage6_summary(console_logger, beat_info)
 
         # Generate status message based on mode
         gpu_info = f"⚡ GPU: {GPU_INFO}" if use_gpu else "💻 CPU"
         fps_info = f"{output_fps:.2f} FPS (custom)" if custom_fps else f"{output_fps:.2f} FPS (auto-detected)"
-        audio_info = "PCM 24-bit (48kHz)"
+        audio_info = "AAC 192k (48kHz) — web-optimised"
         
         if is_prores:
             codec_info = "ProRes 422 Proxy (.mov) - Lossless"
@@ -542,14 +584,14 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             total_processing_seconds=total_processing_seconds,
             processing_label=processing_label
         )
-        # Return preview path for display, keep session_state intact
-        return preview_path, status_msg, session_state
+        # Return preview path for display + download, keep session_state intact
+        return preview_path, status_msg, session_state, preview_path
 
     except Exception as e:
         error_msg = f"❌ Error: {str(e)}"
         import traceback
         traceback.print_exc()
-        return None, error_msg, session_state
+        return None, error_msg, session_state, gr.update(visible=False)
 
 
 def process_video(audio_file: str, video_files: VideoFilesInput,
@@ -626,7 +668,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                 )
         except Exception as e:
             console_logger.line(f"Error: {e}")
-            result = None, f"❌ Error: {e}", session_state
+            result = None, f"❌ Error: {e}", session_state, gr.update(visible=False)
         finally:
             console_logger.finish()
         result_queue.put(result)
@@ -637,7 +679,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
     thread.start()
 
     last_status = initial_status
-    yield None, initial_status, session_state
+    yield None, initial_status, session_state, gr.update(visible=False)
 
     while True:
         message = status_queue.get()
@@ -645,7 +687,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
             break
         if message != last_status:
             last_status = message
-            yield None, message, session_state
+            yield None, message, session_state, gr.update(visible=False)
 
     thread.join()
     yield result_queue.get()
@@ -768,7 +810,8 @@ def create_ui() -> gr.Blocks:
             with gr.Column(scale=1):
                 gr.Markdown('### 📺 Output')
                 status_output = gr.Textbox(label='Status', interactive=False, value=get_ready_status(python_status, cuda_status, MAX_THREADS, CPU_COUNT, ffmpeg_status, GPU_AVAILABLE, gpu_info, NVENC_AVAILABLE), lines=4, max_lines=4, elem_id='status-output-box')
-                video_output = gr.Video(label='Generated Music Video', interactive=False, elem_id='generated-video-output')
+                video_output = gr.Video(label='Generated Music Video', format='mp4', interactive=False, elem_id='generated-video-output')
+                download_btn = gr.DownloadButton('⬇️ Download MP4', variant='secondary', visible=False, elem_id='download-video-btn')
                 
         process_btn.click(
             fn=process_video,
@@ -786,7 +829,7 @@ def create_ui() -> gr.Blocks:
                 color_boost_amount, glitch_strength,
                 slow_motion_probability,
             ],
-            outputs=[video_output, status_output, session_state],
+            outputs=[video_output, status_output, session_state, download_btn],
             show_progress='hidden'
         )
 

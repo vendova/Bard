@@ -615,7 +615,7 @@ def concatenate_videos_ffmpeg(video_files: List[str], output_file: str,
                     cmd.extend(['-map', '0:v:0'])
                 cmd.extend(['-c:v', 'copy'])
                 if audio_file:
-                    cmd.extend(['-c:a', 'pcm_s24le', '-ar', '48000', '-shortest'])
+                    cmd.extend(['-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-shortest'])
                 cmd.extend(['-fflags', '+genpts', '-movflags', '+faststart', '-y', output_file])
 
                 result = _run_media_command(cmd, timeout=300)
@@ -654,7 +654,8 @@ def concatenate_videos_ffmpeg(video_files: List[str], output_file: str,
             
             if audio_file:
                 cmd.extend([
-                    '-c:a', 'pcm_s24le',
+                    '-c:a', 'aac',
+                    '-b:a', '192k',
                     '-ar', '48000',
                     '-shortest',
                 ])
@@ -662,7 +663,7 @@ def concatenate_videos_ffmpeg(video_files: List[str], output_file: str,
             cmd.extend([
                 '-fps_mode', 'cfr',
                 '-r', str(fps),
-                '-y',
+                '-movflags', '+faststart', '-y',
                 output_file
             ])
             
@@ -917,4 +918,130 @@ def compress_video_to_target_size(input_file: str, output_file: str,
     final_size_mb = os.path.getsize(final_output) / (1024 * 1024)
     print(f"   ✓ Compressed output: {final_size_mb:.1f} MB "
           f"({'within' if final_size_mb <= target_size_mb else 'over'} {target_size_mb} MB target)")
+    return final_output
+
+
+# ─── Web-optimised output ──────────────────────────────────────────────
+
+# GOP (keyframe interval) ≈ 2 seconds for smooth seeking & progressive
+# download.  FFmpeg wants an integer frame count.
+def _gop_for_fps(fps: float) -> int:
+    return max(1, int(round(fps * 2)))
+
+
+def get_web_h264_args(fps: float = 30.0, use_nvenc: bool = False,
+                      gpu_encoder: str = 'h264_nvenc') -> List[str]:
+    """Return FFmpeg args for a browser-friendly H.264 stream.
+
+    Optimisations that make the file download and play fast in a web
+    <video> element:
+    • H.264 High profile + yuv420p  →  universal browser support
+    • CRF 19 (CPU) / CQ 21 (NVENC) →  excellent quality, small size
+    • GOP ≈ 2 s                     →  fast random-access seeking
+    • +faststart                    →  moov atom at front for progressive
+                                        download (play before fully loaded)
+    • AAC 192 k stereo              →  compact, universally supported audio
+    """
+    gop = _gop_for_fps(fps)
+    args: List[str] = []
+
+    if use_nvenc:
+        args.extend([
+            '-c:v', gpu_encoder,
+            '-preset', 'p4',          # balanced speed/quality
+            '-tune', 'hq',
+            '-rc', 'vbr',
+            '-cq', '21',
+            '-b:v', '0',
+            '-profile:v', 'high',
+            '-g', str(gop),
+            '-keyint_min', str(gop),
+        ])
+    else:
+        args.extend([
+            '-c:v', 'libx264',
+            '-preset', 'veryfast',    # fast encode, good quality
+            '-crf', '19',
+            '-profile:v', 'high',
+            '-level', '4.1',
+            '-g', str(gop),
+            '-keyint_min', str(gop),
+        ])
+
+    args.extend([
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac',
+        '-b:a', '192k',
+        '-ar', '48000',
+        '-ac', '2',
+        '-movflags', '+faststart',
+        '-tag:v', 'avc1',           # explicit FourCC for Safari
+    ])
+    return args
+
+
+def optimize_for_web(input_file: str, output_file: str,
+                     fps: float = 30.0,
+                     use_nvenc: bool = False,
+                     gpu_encoder: str = 'h264_nvenc',
+                     max_width: int = 1920) -> str:
+    """Produce a browser-optimised MP4 from any input video.
+
+    The output is designed for **fast progressive download and instant
+    playback** in a web <video> element:
+    • H.264 + AAC in an MP4 container
+    • moov atom at the front (+faststart) so playback starts before the
+      file is fully downloaded
+    • 2-second GOP for smooth seeking
+    • Scaled down to *max_width* (preserving aspect ratio) if wider, which
+      dramatically reduces file size for 4K source material while keeping
+      full HD quality
+
+    Returns the path to the optimised file.
+    """
+    duration = get_video_duration(input_file)
+    if duration <= 0:
+        raise RuntimeError(f"Cannot probe duration of {input_file}; aborting web optimisation.")
+
+    base_dir = os.path.dirname(os.path.abspath(output_file)) or '.'
+    os.makedirs(base_dir, exist_ok=True)
+    final_output = os.path.abspath(output_file)
+
+    encoder_label = f"⚡ {gpu_encoder.upper()}" if use_nvenc else "💻 libx264"
+    print(f"\n{'='*60}")
+    print(f"🌐 WEB-OPTIMISING OUTPUT (fast download + instant playback)")
+    print(f"   Source: {os.path.basename(input_file)}  ({duration:.1f}s)")
+    print(f"   Encoder: {encoder_label}")
+    print(f"   GOP: {_gop_for_fps(fps)} frames (~2s)  |  faststart: ON")
+    print(f"{'='*60}")
+
+    # Build filter: scale down if wider than max_width, keep aspect, pad if needed.
+    vf = (f"scale='min({max_width},iw)':'min(ih,{max_width}*9/16)':"
+          f"force_original_aspect_ratio=decrease,"
+          f"pad=ceil(iw/2)*2:ceil(ih/2)*2:(ow-iw)/2:(oh-ih)/2")
+
+    cmd = [FFMPEG_PATH, '-y']
+
+    if use_nvenc:
+        cmd.extend(['-hwaccel', 'cuda'])
+    else:
+        cmd.extend(['-hwaccel', 'auto'])
+
+    cmd.extend(['-i', input_file])
+    cmd.extend(['-vf', vf])
+    cmd.extend(get_web_h264_args(fps=fps, use_nvenc=use_nvenc, gpu_encoder=gpu_encoder))
+    cmd.extend(['-fps_mode', 'cfr', '-r', str(fps), final_output])
+
+    result = _run_media_command(cmd, timeout=7200)
+    if result.returncode != 0:
+        raise RuntimeError(f"Web optimisation failed: {_short_ffmpeg_error(result.stderr, 900)}")
+
+    if not os.path.exists(final_output) or os.path.getsize(final_output) == 0:
+        raise RuntimeError("Web optimisation failed: output file was not created.")
+
+    final_size_mb = os.path.getsize(final_output) / (1024 * 1024)
+    src_size_mb = os.path.getsize(input_file) / (1024 * 1024)
+    ratio = (final_size_mb / src_size_mb * 100) if src_size_mb > 0 else 0
+    print(f"   ✓ Web-optimised: {final_size_mb:.1f} MB "
+          f"(was {src_size_mb:.1f} MB, {ratio:.0f}%)")
     return final_output

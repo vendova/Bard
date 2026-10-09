@@ -337,7 +337,7 @@ INFO_PARALLEL_WORKERS = "Clips processed simultaneously. More workers with GPU."
 
 # Output
 LABEL_OUTPUT_FILENAME = "📝 Output Filename"
-INFO_OUTPUT_FILENAME = "Timestamp added automatically (.mkv or .mov)"
+INFO_OUTPUT_FILENAME = "Timestamp added automatically (output is web-optimised .mp4)"
 
 # ============================================================================
 # EFFECTS LABELS & INFO
