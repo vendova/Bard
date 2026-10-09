@@ -369,7 +369,8 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        font_combo_name: str = "",
                        transition_preset_name: str = "",
                        progress_callback: Callable[[str], None] | None = None,
-                       console_logger: StageConsoleLogger | None = None) -> StatusResult:
+                       console_logger: StageConsoleLogger | None = None,
+                       regenerate: bool = False) -> StatusResult:
     total_started = time.perf_counter()
     try:
         parallel_workers = PARALLEL_WORKERS
@@ -444,18 +445,35 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
         output_path = os.path.join(output_folder, filename)
         temp_output = os.path.join(session_dir, filename)
 
-        selected_beats, beat_info = analyze_beats_auto(
-            local_audio_path,
-            use_gpu=use_gpu,
-            video_files=local_video_paths,
-            progress_callback=progress_callback,
-            console_callback=lambda stage, message: console_logger.stage_line(stage, message) if console_logger else None,
-        )
-        beat_times = beat_info.get('times', selected_beats)
-        _stage5_summary(console_logger, beat_info.get("video_analysis"))
+        # ── Beat analysis (skipped on regenerate) ────────────────────
+        # On regenerate, reuse cached beat_info from the previous render
+        # so the user can tweak presets/effects/lyrics without waiting for
+        # the expensive audio+video analysis to re-run.
+        cached_beat_info = session_state.get('cached_beat_info')
+        if regenerate and cached_beat_info:
+            selected_beats = session_state['cached_selected_beats']
+            beat_info = cached_beat_info
+            beat_times = beat_info.get('times', selected_beats)
+            if console_logger:
+                console_logger.line("🔄 Regenerating — reusing cached beat analysis")
+            if progress_callback:
+                progress_callback(_stage_status(6))
+        else:
+            selected_beats, beat_info = analyze_beats_auto(
+                local_audio_path,
+                use_gpu=use_gpu,
+                video_files=local_video_paths,
+                progress_callback=progress_callback,
+                console_callback=lambda stage, message: console_logger.stage_line(stage, message) if console_logger else None,
+            )
+            beat_times = beat_info.get('times', selected_beats)
+            # Cache for future regeneration
+            session_state['cached_beat_info'] = beat_info
+            session_state['cached_selected_beats'] = selected_beats
+            _stage5_summary(console_logger, beat_info.get("video_analysis"))
 
-        if progress_callback:
-            progress_callback(_stage_status(6))
+            if progress_callback:
+                progress_callback(_stage_status(6))
 
         # Create video
         result_path = create_music_video(
@@ -691,6 +709,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  lyrics_text: str = "",
                  font_combo_name: str = "",
                  transition_preset_name: str = "",
+                 regenerate: bool = False,
                  ) -> Iterator[StatusResult]:
     status_queue: queue.Queue[str | None] = queue.Queue()
     result_queue: queue.Queue[StatusResult] = queue.Queue(maxsize=1)
@@ -754,6 +773,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                     transition_preset_name=transition_preset_name,
                     progress_callback=progress_callback,
                     console_logger=console_logger,
+                    regenerate=regenerate,
                 )
         except Exception as e:
             console_logger.line(f"Error: {e}")
@@ -780,6 +800,72 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
 
     thread.join()
     yield result_queue.get()
+
+
+def regenerate_video(audio_file: str, video_files: VideoFilesInput,
+                      output_filename: str, processing_mode: str,
+                      custom_fps: float, session_state: dict,
+                      effects_enabled: bool = False,
+                      gradient_overlay: bool = False,
+                      vignette: bool = False,
+                      zoom_punch: bool = False,
+                      shake: bool = False,
+                      flash_on_beat: bool = False,
+                      color_boost: bool = False,
+                      glitch: bool = False,
+                      mirror: bool = False,
+                      slow_motion: bool = False,
+                      slow_motion_factor: float = 2.0,
+                      transition_type: str = 'none',
+                      transition_duration: float = 0.35,
+                      vignette_strength: float = 0.4,
+                      zoom_punch_strength: float = 1.06,
+                      shake_strength: float = 8.0,
+                      flash_intensity: float = 0.6,
+                      color_boost_amount: float = 1.3,
+                      glitch_strength: float = 0.3,
+                      slow_motion_probability: float = 0.15,
+                      smart_sync: bool = False,
+                      lyrics_text: str = "",
+                      font_combo_name: str = "",
+                      transition_preset_name: str = "",
+                      ) -> Iterator[StatusResult]:
+    """Re-render with updated settings, reusing cached beat analysis.
+
+    Falls back to a full render if no cached beat_info exists.
+    """
+    if not session_state or 'cached_beat_info' not in session_state:
+        yield from process_video(
+            audio_file, video_files, output_filename, processing_mode,
+            custom_fps, session_state,
+            effects_enabled, gradient_overlay, vignette, zoom_punch, shake,
+            flash_on_beat, color_boost, glitch, mirror,
+            slow_motion, slow_motion_factor,
+            transition_type, transition_duration,
+            vignette_strength, zoom_punch_strength,
+            shake_strength, flash_intensity,
+            color_boost_amount, glitch_strength,
+            slow_motion_probability,
+            smart_sync, lyrics_text, font_combo_name,
+            transition_preset_name,
+        )
+        return
+
+    yield from process_video(
+        audio_file, video_files, output_filename, processing_mode,
+        custom_fps, session_state,
+        effects_enabled, gradient_overlay, vignette, zoom_punch, shake,
+        flash_on_beat, color_boost, glitch, mirror,
+        slow_motion, slow_motion_factor,
+        transition_type, transition_duration,
+        vignette_strength, zoom_punch_strength,
+        shake_strength, flash_intensity,
+        color_boost_amount, glitch_strength,
+        slow_motion_probability,
+        smart_sync, lyrics_text, font_combo_name,
+        transition_preset_name,
+        regenerate=True,
+    )
 
 
 def cleanup_on_startup():
@@ -917,35 +1003,47 @@ def create_ui() -> gr.Blocks:
                             info=INFO_TRANSITION_PRESET,
                         )
 
-                process_btn = gr.Button('🎬 Create Music Video', variant='primary', size='lg')
+                with gr.Row():
+                    process_btn = gr.Button('🎬 Create Music Video', variant='primary', size='lg')
+                    regenerate_btn = gr.Button('🔄 Regenerate', variant='secondary', size='lg', interactive=True)
 
             with gr.Column(scale=1):
                 gr.Markdown('### 📺 Output')
                 status_output = gr.Textbox(label='Status', interactive=False, value=get_ready_status(python_status, cuda_status, MAX_THREADS, CPU_COUNT, ffmpeg_status, GPU_AVAILABLE, gpu_info, NVENC_AVAILABLE), lines=4, max_lines=4, elem_id='status-output-box')
                 video_output = gr.Video(label='Generated Music Video', format='mp4', interactive=False, elem_id='generated-video-output')
                 download_btn = gr.DownloadButton('⬇️ Download MP4', variant='secondary', visible=False, elem_id='download-video-btn')
-                
+
+        _shared_inputs = [
+            audio_input, video_input,
+            output_filename, processing_mode, custom_fps,
+            session_state,
+            effects_enabled,
+            gradient_overlay, vignette, zoom_punch, shake,
+            flash_on_beat, color_boost, glitch, mirror,
+            slow_motion, slow_motion_factor,
+            transition_type, transition_duration,
+            vignette_strength, zoom_punch_strength,
+            shake_strength, flash_intensity,
+            color_boost_amount, glitch_strength,
+            slow_motion_probability,
+            smart_sync_enabled,
+            lyrics_text,
+            font_combo,
+            transition_preset,
+        ]
+        _shared_outputs = [video_output, status_output, session_state, download_btn]
+
         process_btn.click(
             fn=process_video,
-            inputs=[
-                audio_input, video_input,
-                output_filename, processing_mode, custom_fps,
-                session_state,
-                effects_enabled,
-                gradient_overlay, vignette, zoom_punch, shake,
-                flash_on_beat, color_boost, glitch, mirror,
-                slow_motion, slow_motion_factor,
-                transition_type, transition_duration,
-                vignette_strength, zoom_punch_strength,
-                shake_strength, flash_intensity,
-                color_boost_amount, glitch_strength,
-                slow_motion_probability,
-                smart_sync_enabled,
-                lyrics_text,
-                font_combo,
-                transition_preset,
-            ],
-            outputs=[video_output, status_output, session_state, download_btn],
+            inputs=_shared_inputs,
+            outputs=_shared_outputs,
+            show_progress='hidden'
+        )
+
+        regenerate_btn.click(
+            fn=regenerate_video,
+            inputs=_shared_inputs,
+            outputs=_shared_outputs,
             show_progress='hidden'
         )
 
