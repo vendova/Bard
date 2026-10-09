@@ -422,6 +422,135 @@ def apply_transitions_ffmpeg(
     return output_file
 
 
+def smart_transitions_ffmpeg(
+    clip_files: List[str],
+    output_file: str,
+    audio_file: Optional[str],
+    start_time: float,
+    end_time: Optional[float],
+    cfg: EffectsConfig,
+    transition_types: List[str],
+    transition_durations: Optional[List[float]] = None,
+    fps: float = 30.0,
+    use_nvenc: bool = False,
+    gpu_encoder: str = 'h264_nvenc',
+    temp_dir: Optional[str] = None,
+) -> str:
+    """Concatenate clips with per-cut xfade transitions (Smart Sync mode).
+
+    Like ``apply_transitions_ffmpeg`` but each cut can use a different
+    transition type and duration, chosen by the smart sync engine.
+
+    Args:
+        transition_types: one transition name per cut (len = len(clip_files) - 1).
+        transition_durations: optional per-cut duration; falls back to cfg.
+    """
+    n = len(clip_files)
+    if n < 2:
+        return fp.concatenate_videos_ffmpeg(
+            clip_files, output_file, audio_file, start_time, end_time,
+            use_nvenc, gpu_encoder, fps, temp_dir,
+        )
+
+    # Validate transition list length.
+    if len(transition_types) < n - 1:
+        transition_types = transition_types + ["fade"] * (n - 1 - len(transition_types))
+    transition_types = [t if t in _XFADE_MAP else "fade" for t in transition_types[:n - 1]]
+
+    if transition_durations is None:
+        transition_durations = [cfg.transition_duration] * (n - 1)
+    else:
+        transition_durations = (transition_durations[:n - 1]
+                                + [cfg.transition_duration] * max(0, n - 1 - len(transition_durations)))
+
+    os.makedirs(temp_dir or os.path.dirname(output_file) or '.', exist_ok=True)
+
+    durations = [fp.get_video_duration(c) for c in clip_files]
+
+    filter_parts: List[str] = []
+    inputs: List[str] = []
+    for clip in clip_files:
+        inputs.extend(['-i', clip])
+
+    cumulative = durations[0]
+    prev_label = '[0:v]'
+    for i in range(1, n):
+        t_name = _XFADE_MAP[transition_types[i - 1]]
+        t_dur = transition_durations[i - 1]
+        offset = max(0.0, cumulative - t_dur)
+        out_label = f'[v{i}]' if i < n - 1 else '[vout]'
+        filter_parts.append(
+            f"{prev_label}[{i}:v]xfade=transition={t_name}:"
+            f"duration={t_dur:.4f}:offset={offset:.4f}{out_label}"
+        )
+        cumulative = cumulative + durations[i] - t_dur
+        prev_label = out_label
+
+    filter_complex = ';'.join(filter_parts)
+
+    cmd = [fp.FFMPEG_PATH, '-nostdin', '-hide_banner']
+    cmd.extend(inputs)
+
+    audio_input_idx = n
+    audio_filters: List[str] = []
+    has_audio = False
+    if audio_file:
+        cmd.extend(['-i', audio_file])
+        has_audio = True
+        trim_end = cumulative if end_time and end_time > start_time else None
+        if start_time > 0 or trim_end:
+            parts = []
+            if start_time > 0:
+                parts.append(f'atrim=start={start_time}')
+            if trim_end:
+                a_dur = trim_end - start_time
+                parts.append(f'atrim=duration={a_dur}')
+            parts.append('asetpts=PTS-STARTPTS')
+            audio_filters.append(','.join(parts))
+
+    cmd.extend(['-filter_complex', filter_complex, '-map', '[vout]'])
+    if has_audio:
+        cmd.extend(['-map', f'{audio_input_idx}:a'])
+        if audio_filters:
+            cmd.extend(['-af', ';'.join(audio_filters)])
+        cmd.extend(['-c:a', 'aac', '-b:a', '192k', '-shortest'])
+    else:
+        cmd.extend(['-an'])
+
+    if use_nvenc:
+        cmd.extend(fp.get_nvenc_quality_args(gpu_encoder, include_pix_fmt=True))
+    else:
+        cmd.extend(fp.get_cpu_h264_quality_args(include_pix_fmt=True))
+
+    cmd.extend([
+        '-r', str(fps),
+        '-fps_mode', 'cfr',
+        '-movflags', '+faststart',
+        '-y', output_file,
+    ])
+
+    # Summarise the transition mix.
+    from collections import Counter
+    mix = Counter(transition_types)
+    mix_str = ", ".join(f"{t}×{c}" for t, c in mix.items())
+    print(f"   🧠 Smart transitions: {n - 1} cuts [{mix_str}]")
+
+    result = fp._run_media_command(cmd, timeout=1800)
+
+    if result.returncode != 0:
+        err = fp._short_ffmpeg_error(result.stderr)
+        print(f"   ⚠️  Smart transition xfade failed ({err}); falling back to hard-cut concat.")
+        return fp.concatenate_videos_ffmpeg(
+            clip_files, output_file, audio_file, start_time, end_time,
+            use_nvenc, gpu_encoder, fps, temp_dir,
+        )
+
+    final_dur = fp.get_video_duration(output_file)
+    print(f"   ✓ Smart transitions applied. Output duration: {final_dur:.2f}s "
+          f"(was {sum(durations):.2f}s, saved {(sum(durations) - final_dur):.2f}s)")
+    return output_file
+
+
 # ---------------------------------------------------------------------------
 # Fade in/out per clip (lightweight transition that preserves concat pipeline)
 # ---------------------------------------------------------------------------

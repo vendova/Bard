@@ -346,6 +346,9 @@ INFO_OUTPUT_FILENAME = "Timestamp added automatically (output is web-optimised .
 LABEL_EFFECTS_ENABLED = "✨ Enable Visual Effects"
 INFO_EFFECTS_ENABLED = "Master toggle for all effect controls below"
 
+LABEL_SMART_SYNC = "🧠 Smart Sync (AI Energy Matching)"
+INFO_SMART_SYNC = "Shuffles clips to match beat energy, picks transitions per cut, and scales effects dynamically"
+
 LABEL_GRADIENT_OVERLAY = "🌈 Gradient Color Overlay"
 INFO_GRADIENT_OVERLAY = "Subtle color wash overlay on clips"
 

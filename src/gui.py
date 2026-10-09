@@ -355,6 +355,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        output_filename: str, processing_mode: str,
                        custom_fps: float, session_state: dict,
                        effects_config: EffectsConfig = None,
+                       smart_sync: bool = False,
                        progress_callback: Callable[[str], None] | None = None,
                        console_logger: StageConsoleLogger | None = None) -> StatusResult:
     total_started = time.perf_counter()
@@ -451,6 +452,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             beat_info=beat_info, lossless_mode=is_prores,
             use_gpu=use_gpu, gpu_encoder=gpu_encoder, fps=output_fps,
             effects_config=effects_config,
+            smart_sync=smart_sync,
         )
 
         # Move to output folder
@@ -617,6 +619,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  color_boost_amount: float = 1.3,
                  glitch_strength: float = 0.3,
                  slow_motion_probability: float = 0.15,
+                 smart_sync: bool = False,
                  ) -> Iterator[StatusResult]:
     status_queue: queue.Queue[str | None] = queue.Queue()
     result_queue: queue.Queue[StatusResult] = queue.Queue(maxsize=1)
@@ -663,6 +666,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                     custom_fps=custom_fps,
                     session_state=session_state,
                     effects_config=effects_config,
+                    smart_sync=smart_sync,
                     progress_callback=progress_callback,
                     console_logger=console_logger,
                 )
@@ -770,6 +774,7 @@ def create_ui() -> gr.Blocks:
 
                 with gr.Accordion('✨ Visual Effects & Transitions', open=False):
                     effects_enabled = gr.Checkbox(value=False, label=LABEL_EFFECTS_ENABLED, info=INFO_EFFECTS_ENABLED)
+                    smart_sync_enabled = gr.Checkbox(value=False, label=LABEL_SMART_SYNC, info=INFO_SMART_SYNC)
                     with gr.Row():
                         gradient_overlay = gr.Checkbox(value=False, label=LABEL_GRADIENT_OVERLAY, info=INFO_GRADIENT_OVERLAY)
                         vignette = gr.Checkbox(value=False, label=LABEL_VIGNETTE, info=INFO_VIGNETTE)
@@ -828,6 +833,7 @@ def create_ui() -> gr.Blocks:
                 shake_strength, flash_intensity,
                 color_boost_amount, glitch_strength,
                 slow_motion_probability,
+                smart_sync_enabled,
             ],
             outputs=[video_output, status_output, session_state, download_btn],
             show_progress='hidden'

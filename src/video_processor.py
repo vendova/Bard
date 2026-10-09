@@ -51,8 +51,11 @@ from video_effects import (
     build_clip_effect_filters,
     needs_transitions,
     apply_transitions_ffmpeg,
+    smart_transitions_ffmpeg,
 )
 from auto_mode.stage6_av_planner import build_planned_clip_sequence, summarize_clip_plan
+from auto_mode.stage6_av_planner import _build_segment_profiles as build_segment_profiles
+from smart_sync import build_smart_sync_plan, compute_segment_energy, smart_transition_duration
 
 # Import mode modules
 from auto_mode import analyze_beats_auto
@@ -272,7 +275,12 @@ def create_clip_parallel(args):
     clip_started = time.perf_counter()
     planned_clip = None
     effects_cfg = None
-    if len(args) >= 10:
+    effect_overrides = None
+    if len(args) >= 11:
+        (i, video_file, final_duration, target_size,
+         use_nvenc, gpu_encoder, temp_dir, fps, planned_clip, effects_cfg,
+         effect_overrides) = args
+    elif len(args) >= 10:
         (i, video_file, final_duration, target_size,
          use_nvenc, gpu_encoder, temp_dir, fps, planned_clip, effects_cfg) = args
     elif len(args) >= 9:
@@ -288,9 +296,16 @@ def create_clip_parallel(args):
         clip_effect_filters = []
         speed_factor = None
         if effects_cfg is not None:
-            clip_effect_filters, speed_factor = build_clip_effect_filters(
-                effects_cfg, i, final_duration, fps, target_size,
-            )
+            if effect_overrides is not None:
+                # Smart Sync: use energy-aware per-clip effect intensities.
+                from smart_sync import smart_build_clip_effect_filters
+                clip_effect_filters, speed_factor = smart_build_clip_effect_filters(
+                    effects_cfg, effect_overrides, i, final_duration, fps, target_size,
+                )
+            else:
+                clip_effect_filters, speed_factor = build_clip_effect_filters(
+                    effects_cfg, i, final_duration, fps, target_size,
+                )
 
         # When slow motion is active, the extraction function handles the
         # source-duration reduction internally via speed_factor.  We pass the
@@ -360,7 +375,8 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                       beat_info: dict = None,
                       lossless_mode: bool = False, use_gpu: bool = False, 
                       gpu_encoder: str = 'h264_nvenc', fps: float = None,
-                      effects_config: EffectsConfig = None) -> str:
+                      effects_config: EffectsConfig = None,
+                      smart_sync: bool = False) -> str:
     """
     Creates a music video with video clips cut to detected beats.
     
@@ -484,23 +500,71 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
     print(f"⏱️  Cut timeline: {len(selected_beats)} boundaries, {sum(segment_frames)} frames")
     if dropped_boundaries:
         print(f"   ⚠️  Dropped {dropped_boundaries} duplicate/too-close cut boundaries after frame quantization")
-    planned_clip_sequence = build_planned_clip_sequence(
-        cut_times=selected_beats,
-        segment_durations=segment_durations,
-        beat_info=beat_info,
-        video_files=video_files,
-    )
-    if planned_clip_sequence:
-        plan_summary = summarize_clip_plan(planned_clip_sequence)
-        if beat_info is not None:
-            beat_info['clip_plan_summary'] = plan_summary
-            render_info["plan_summary"] = plan_summary
-        print(f"🧠 Auto visual planner: {plan_summary['clip_count']} planned clips")
-        print(f"   Sources used: {plan_summary.get('source_count', 0)}")
-        print(f"   Targets: {plan_summary.get('targets', {})}")
-        print(f"   AI-tagged source moments used: {plan_summary.get('ai_tagged', 0)}")
+    smart_transitions_list: List[str] = []
+    smart_effect_overrides: List[Dict] = []
+
+    if smart_sync:
+        # ── Smart Sync mode: AI-driven energy matching ──
+        print(f"\n{'='*60}")
+        print(f"🧠 SMART SYNC: AI-driven clip-to-beat energy matching")
+        print(f"{'='*60}")
+
+        profiles = build_segment_profiles(
+            np.asarray(selected_beats, dtype=float),
+            np.asarray(segment_durations, dtype=float),
+            beat_info or {},
+        )
+        video_analysis = (beat_info or {}).get("video_analysis") or {}
+        candidates = list(video_analysis.get("candidates") or [])
+        candidates = [c for c in candidates if c.get("video_file")]
+
+        planned_clip_sequence, smart_transitions_list, smart_effect_overrides = \
+            build_smart_sync_plan(profiles, candidates, video_files, beat_info)
+
+        if planned_clip_sequence:
+            plan_summary = summarize_clip_plan(planned_clip_sequence)
+            if beat_info is not None:
+                beat_info['clip_plan_summary'] = plan_summary
+                render_info["plan_summary"] = plan_summary
+            # Count unique sources and energy match quality.
+            energies = [(p.get("segment_energy", 0), p.get("clip_energy", 0))
+                        for p in planned_clip_sequence]
+            match_err = np.mean([abs(s - c) for s, c in energies]) if energies else 0.0
+            print(f"   ✓ {plan_summary['clip_count']} clips assigned (energy-match error: {match_err:.3f})")
+            print(f"   Sources used: {plan_summary.get('source_count', 0)}")
+            print(f"   Targets: {plan_summary.get('targets', {})}")
+            if smart_transitions_list:
+                from collections import Counter
+                tmix = Counter(smart_transitions_list)
+                print(f"   Smart transitions: {', '.join(f'{t}×{c}' for t, c in tmix.items())}")
+        else:
+            print("   ⚠️  Smart sync produced no plan; falling back to legacy planner")
+            planned_clip_sequence = build_planned_clip_sequence(
+                cut_times=selected_beats,
+                segment_durations=segment_durations,
+                beat_info=beat_info,
+                video_files=video_files,
+            )
     else:
-        print("🎲 Visual planner fallback: source moments will use legacy random sampling")
+        planned_clip_sequence = build_planned_clip_sequence(
+            cut_times=selected_beats,
+            segment_durations=segment_durations,
+            beat_info=beat_info,
+            video_files=video_files,
+        )
+
+    if not smart_sync:
+        if planned_clip_sequence:
+            plan_summary = summarize_clip_plan(planned_clip_sequence)
+            if beat_info is not None:
+                beat_info['clip_plan_summary'] = plan_summary
+                render_info["plan_summary"] = plan_summary
+            print(f"🧠 Auto visual planner: {plan_summary['clip_count']} planned clips")
+            print(f"   Sources used: {plan_summary.get('source_count', 0)}")
+            print(f"   Targets: {plan_summary.get('targets', {})}")
+            print(f"   AI-tagged source moments used: {plan_summary.get('ai_tagged', 0)}")
+        else:
+            print("🎲 Visual planner fallback: source moments will use legacy random sampling")
 
     # LOSSLESS MODE - ProRes workflow with FRAME-PERFECT precision
     if lossless_mode:
@@ -647,9 +711,10 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             # Duration comes from the absolute frame-locked cut timeline.
             planned_clip = planned_clip_sequence[i] if planned_clip_sequence else None
             video_file = planned_clip.get('video_file') if planned_clip else random.choice(video_files)
+            overrides = smart_effect_overrides[i] if smart_effect_overrides and i < len(smart_effect_overrides) else None
             clip_args.append((i, video_file, final_duration,
                             target_size, use_nvenc, gpu_encoder, session_temp_dir, fps,
-                            planned_clip, effects_config))
+                            planned_clip, effects_config, overrides))
         
         clip_files = [None] * len(clip_args)
         clip_timings: List[float] = []
@@ -716,10 +781,26 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         print(f"{'='*60}\n")
         
         # Concatenate all clips and add audio.
-        # When transitions are enabled, use xfade-based concatenation instead
-        # of the hard-cut concat demuxer.
+        # When smart sync transitions are available, use per-cut xfade.
+        # When standard transitions are enabled, use uniform xfade.
+        # Otherwise, use the hard-cut concat demuxer.
         assembly_started = time.perf_counter()
-        if effects_config is not None and needs_transitions(effects_config):
+        if smart_sync and smart_transitions_list and len(clip_files) > 1:
+            print(f"   🧠 Smart transition mode: per-cut adaptive xfade")
+            smart_transitions_ffmpeg(
+                clip_files=clip_files,
+                output_file=output_file,
+                audio_file=audio_file,
+                start_time=start_time,
+                end_time=end_time,
+                cfg=effects_config or EffectsConfig(enabled=True),
+                transition_types=smart_transitions_list,
+                fps=fps,
+                use_nvenc=use_nvenc,
+                gpu_encoder=gpu_encoder,
+                temp_dir=session_temp_dir,
+            )
+        elif effects_config is not None and needs_transitions(effects_config):
             print(f"   🎭 Transition mode: {effects_config.transition_type} "
                   f"({effects_config.transition_duration}s)")
             apply_transitions_ffmpeg(
