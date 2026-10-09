@@ -367,6 +367,262 @@ def _transliterate_thai(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Generic Brahmic-script transliterator
+# Used by Telugu, Tamil, Malayalam, Kannada (and could replace Devanagari).
+# All Brahmic scripts share the same structure:
+#   • Consonants carry an inherent 'a' vowel (ka, kha, ga, …)
+#   • Matras (vowel signs) replace the inherent vowel (క + ు = ku, not kau)
+#   • Virama suppresses the inherent vowel (క + ് = k)
+#   • Consonant clusters use virama between consonants (క్ష = k+sha)
+# ---------------------------------------------------------------------------
+
+def _transliterate_brahmic(
+    text: str,
+    consonants: Dict[str, str],
+    vowels: Dict[str, str],
+    matras: Dict[str, str],
+    specials: Dict[str, str],
+    virama: str,
+) -> str:
+    """Transliterate any Brahmic script using shared structural logic."""
+    result: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+
+        # Independent vowel
+        if ch in vowels:
+            result.append(vowels[ch])
+            i += 1
+            continue
+
+        # Consonant — check for conjunct (2-char) first
+        matched_consonant = False
+        for clen in (2, 1):
+            if i + clen <= n:
+                sub = text[i:i + clen]
+                if sub in consonants:
+                    base = consonants[sub]
+                    next_ch = text[i + clen] if (i + clen < n) else ''
+                    if next_ch == virama:
+                        # Virama: suppress inherent 'a'
+                        # Check if there's a matra after the virama
+                        # (rare but possible in some orthographies)
+                        result.append(base[:-1] if base.endswith('a') else base)
+                        i += clen + 1
+                        matched_consonant = True
+                        break
+                    elif next_ch in matras:
+                        # Matra replaces inherent 'a'
+                        matra_val = matras[next_ch]
+                        if base.endswith('a'):
+                            result.append(base[:-1] + matra_val)
+                        else:
+                            result.append(base + matra_val)
+                        i += clen + 1
+                        matched_consonant = True
+                        break
+                    else:
+                        # Consonant with inherent 'a'
+                        result.append(base)
+                        i += clen
+                        matched_consonant = True
+                        break
+
+        if matched_consonant:
+            continue
+
+        # Standalone matra (shouldn't appear without consonant, but handle gracefully)
+        if ch in matras:
+            result.append(matras[ch])
+            i += 1
+            continue
+
+        # Virama alone (shouldn't happen, skip it)
+        if ch == virama:
+            i += 1
+            continue
+
+        # Special characters (numerals, punctuation, danda)
+        if ch in specials:
+            result.append(specials[ch])
+            i += 1
+            continue
+
+        # Pass through everything else (Latin, punctuation, spaces)
+        result.append(ch)
+        i += 1
+
+    return ''.join(result)
+
+
+# ---------------------------------------------------------------------------
+# Telugu (U+0C00–U+0C7F)
+# ---------------------------------------------------------------------------
+
+_TELUGU_VOWELS = {
+    'అ': 'a', 'ఆ': 'aa', 'ఇ': 'i', 'ఈ': 'ii', 'ఉ': 'u', 'ఊ': 'uu',
+    'ఋ': 'ru', 'ఎ': 'e', 'ఏ': 'ee', 'ఐ': 'ai', 'ఒ': 'o', 'ఓ': 'oo',
+    'ఔ': 'au',
+}
+
+_TELUGU_MATRAS = {
+    'ా': 'aa', 'ి': 'i', 'ీ': 'ii', 'ు': 'u', 'ూ': 'uu', 'ృ': 'ru',
+    'ె': 'e', 'ే': 'ee', 'ై': 'ai', 'ొ': 'o', 'ో': 'oo', 'ౌ': 'au',
+}
+
+_TELUGU_CONSONANTS = {
+    'క': 'ka', 'ఖ': 'kha', 'గ': 'ga', 'ఘ': 'gha', 'ఙ': 'nga',
+    'చ': 'cha', 'ఛ': 'chha', 'జ': 'ja', 'ఝ': 'jha', 'ఞ': 'nya',
+    'ట': 'ta', 'ఠ': 'tha', 'డ': 'da', 'ఢ': 'dha', 'ణ': 'na',
+    'త': 'ta', 'థ': 'tha', 'ద': 'da', 'ధ': 'dha', 'న': 'na',
+    'ప': 'pa', 'ఫ': 'pha', 'బ': 'ba', 'భ': 'bha', 'మ': 'ma',
+    'య': 'ya', 'ర': 'ra', 'ఱ': 'ra', 'ల': 'la', 'ళ': 'la',
+    'వ': 'va', 'శ': 'sha', 'ష': 'sha', 'స': 'sa', 'హ': 'ha',
+    'క్ష': 'ksha', 'త్ర': 'tra', 'జ్ఞ': 'gya',
+}
+
+_TELUGU_SPECIALS = {
+    'ం': 'n', 'ః': 'h', 'ఁ': 'n',
+    '౦': '0', '౧': '1', '౨': '2', '౩': '3', '౪': '4',
+    '౫': '5', '౬': '6', '౭': '7', '౮': '8', '౯': '9',
+    '।': '. ', '॥': ' || ',
+}
+
+_TELUGU_VIRAMA = '్'
+
+
+def _transliterate_telugu(text: str) -> str:
+    return _transliterate_brahmic(text, _TELUGU_CONSONANTS, _TELUGU_VOWELS,
+                                  _TELUGU_MATRAS, _TELUGU_SPECIALS, _TELUGU_VIRAMA)
+
+
+# ---------------------------------------------------------------------------
+# Tamil (U+0B80–U+0BFF)
+# ---------------------------------------------------------------------------
+
+_TAMIL_VOWELS = {
+    'அ': 'a', 'ஆ': 'aa', 'இ': 'i', 'ஈ': 'ii', 'உ': 'u', 'ஊ': 'uu',
+    'எ': 'e', 'ஏ': 'ee', 'ஐ': 'ai', 'ஒ': 'o', 'ஓ': 'oo', 'ஔ': 'au',
+    'ஃ': 'h',   # aytham
+}
+
+_TAMIL_MATRAS = {
+    'ா': 'aa', 'ி': 'i', 'ீ': 'ii', 'ு': 'u', 'ூ': 'uu',
+    'ெ': 'e', 'ே': 'ee', 'ை': 'ai', 'ொ': 'o', 'ோ': 'oo', 'ௌ': 'au',
+}
+
+_TAMIL_CONSONANTS = {
+    'க': 'ka', 'ங': 'nga', 'ச': 'cha', 'ஞ': 'nya',
+    'ட': 'ta', 'ண': 'na', 'த': 'ta', 'ந': 'na', 'ன': 'na',
+    'ப': 'pa', 'ம': 'ma', 'ய': 'ya', 'ர': 'ra', 'ற': 'ra',
+    'ல': 'la', 'ள': 'la', 'ழ': 'zha', 'வ': 'va',
+    'ஶ': 'sha', 'ஷ': 'sha', 'ஸ': 'sa', 'ஹ': 'ha', 'ஜ': 'ja',
+    'க்ஷ': 'ksha', 'த்ர': 'tra', 'ஜ்ஞ': 'gya',
+}
+
+_TAMIL_SPECIALS = {
+    'ஂ': 'n', 'ஃ': 'h',
+    '௦': '0', '௧': '1', '௨': '2', '௩': '3', '௪': '4',
+    '௫': '5', '௬': '6', '௭': '7', '௮': '8', '௯': '9',
+    '।': '. ', '॥': ' || ',
+}
+
+_TAMIL_VIRAMA = '்'   # pulli
+
+
+def _transliterate_tamil(text: str) -> str:
+    return _transliterate_brahmic(text, _TAMIL_CONSONANTS, _TAMIL_VOWELS,
+                                  _TAMIL_MATRAS, _TAMIL_SPECIALS, _TAMIL_VIRAMA)
+
+
+# ---------------------------------------------------------------------------
+# Malayalam (U+0D00–U+0D7F)
+# ---------------------------------------------------------------------------
+
+_MALAYALAM_VOWELS = {
+    'അ': 'a', 'ആ': 'aa', 'ഇ': 'i', 'ഈ': 'ii', 'ഉ': 'u', 'ഊ': 'uu',
+    'ഋ': 'ru', 'എ': 'e', 'ഏ': 'ee', 'ഐ': 'ai', 'ഒ': 'o', 'ഓ': 'oo',
+    'ഔ': 'au',
+}
+
+_MALAYALAM_MATRAS = {
+    'ാ': 'aa', 'ി': 'i', 'ീ': 'ii', 'ു': 'u', 'ൂ': 'uu', 'ൃ': 'ru',
+    'െ': 'e', 'േ': 'ee', 'ൈ': 'ai', 'ൊ': 'o', 'ോ': 'oo', 'ൌ': 'au',
+}
+
+_MALAYALAM_CONSONANTS = {
+    'ക': 'ka', 'ഖ': 'kha', 'ഗ': 'ga', 'ഘ': 'gha', 'ങ': 'nga',
+    'ച': 'cha', 'ഛ': 'chha', 'ജ': 'ja', 'ഝ': 'jha', 'ഞ': 'nya',
+    'ട': 'ta', 'ഠ': 'tha', 'ഡ': 'da', 'ഢ': 'dha', 'ണ': 'na',
+    'ത': 'ta', 'ഥ': 'tha', 'ദ': 'da', 'ധ': 'dha', 'ന': 'na',
+    'പ': 'pa', 'ഫ': 'pha', 'ബ': 'ba', 'ഭ': 'bha', 'മ': 'ma',
+    'യ': 'ya', 'ര': 'ra', 'റ': 'ra', 'ല': 'la', 'ള': 'la',
+    'ഴ': 'zha', 'വ': 'va', 'ശ': 'sha', 'ഷ': 'sha', 'സ': 'sa', 'ഹ': 'ha',
+    'ക്ഷ': 'ksha', 'ത്ര': 'tra', 'ജ്ഞ': 'gya',
+}
+
+_MALAYALAM_SPECIALS = {
+    'ം': 'n', 'ഃ': 'h', 'ഁ': 'n',
+    # Chillu letters (consonant without inherent vowel)
+    'ൻ': 'n', 'ൺ': 'n', 'ർ': 'r', 'ൽ': 'l', 'ൾ': 'l',
+    'ൿ': 'k', 'ൔ': 'm', 'ൕ': 'y', 'ൖ': 'l',
+    '൦': '0', '൧': '1', '൨': '2', '൩': '3', '൪': '4',
+    '൫': '5', '൬': '6', '൭': '7', '൮': '8', '൯': '9',
+    '।': '. ', '॥': ' || ',
+}
+
+_MALAYALAM_VIRAMA = '്'
+
+
+def _transliterate_malayalam(text: str) -> str:
+    return _transliterate_brahmic(text, _MALAYALAM_CONSONANTS, _MALAYALAM_VOWELS,
+                                  _MALAYALAM_MATRAS, _MALAYALAM_SPECIALS, _MALAYALAM_VIRAMA)
+
+
+# ---------------------------------------------------------------------------
+# Kannada (U+0C80–U+0CFF)
+# ---------------------------------------------------------------------------
+
+_KANNADA_VOWELS = {
+    'ಅ': 'a', 'ಆ': 'aa', 'ಇ': 'i', 'ಈ': 'ii', 'ಉ': 'u', 'ಊ': 'uu',
+    'ಋ': 'ru', 'ಎ': 'e', 'ಏ': 'ee', 'ಐ': 'ai', 'ಒ': 'o', 'ಓ': 'oo',
+    'ಔ': 'au',
+}
+
+_KANNADA_MATRAS = {
+    'ಾ': 'aa', 'ಿ': 'i', 'ೀ': 'ii', 'ು': 'u', 'ೂ': 'uu', 'ೃ': 'ru',
+    'ೆ': 'e', 'ೇ': 'ee', 'ೈ': 'ai', 'ೊ': 'o', 'ೋ': 'oo', 'ೌ': 'au',
+}
+
+_KANNADA_CONSONANTS = {
+    'ಕ': 'ka', 'ಖ': 'kha', 'ಗ': 'ga', 'ಘ': 'gha', 'ಙ': 'nga',
+    'ಚ': 'cha', 'ಛ': 'chha', 'ಜ': 'ja', 'ಝ': 'jha', 'ಞ': 'nya',
+    'ಟ': 'ta', 'ಠ': 'tha', 'ಡ': 'da', 'ಢ': 'dha', 'ಣ': 'na',
+    'ತ': 'ta', 'ಥ': 'tha', 'ದ': 'da', 'ಧ': 'dha', 'ನ': 'na',
+    'ಪ': 'pa', 'ಫ': 'pha', 'ಬ': 'ba', 'ಭ': 'bha', 'ಮ': 'ma',
+    'ಯ': 'ya', 'ರ': 'ra', 'ಱ': 'ra', 'ಲ': 'la', 'ಳ': 'la',
+    'ವ': 'va', 'ಶ': 'sha', 'ಷ': 'sha', 'ಸ': 'sa', 'ಹ': 'ha',
+    'ಕ್ಷ': 'ksha', 'ತ್ರ': 'tra', 'ಜ್ಞ': 'gya',
+}
+
+_KANNADA_SPECIALS = {
+    'ಂ': 'n', 'ಃ': 'h', 'ಁ': 'n',
+    '೦': '0', '೧': '1', '೨': '2', '೩': '3', '೪': '4',
+    '೫': '5', '೬': '6', '೭': '7', '೮': '8', '೯': '9',
+    '।': '. ', '॥': ' || ',
+}
+
+_KANNADA_VIRAMA = '್'
+
+
+def _transliterate_kannada(text: str) -> str:
+    return _transliterate_brahmic(text, _KANNADA_CONSONANTS, _KANNADA_VOWELS,
+                                  _KANNADA_MATRAS, _KANNADA_SPECIALS, _KANNADA_VIRAMA)
+
+
+# ---------------------------------------------------------------------------
 # Script detection
 # ---------------------------------------------------------------------------
 
@@ -375,6 +631,7 @@ def _detect_script(text: str) -> str:
     counts = {
         'cyrillic': 0, 'devanagari': 0, 'arabic': 0, 'japanese': 0,
         'korean': 0, 'greek': 0, 'hebrew': 0, 'thai': 0, 'latin': 0,
+        'telugu': 0, 'tamil': 0, 'malayalam': 0, 'kannada': 0,
     }
     for ch in text:
         code = ord(ch)
@@ -394,6 +651,14 @@ def _detect_script(text: str) -> str:
             counts['hebrew'] += 1
         elif 0x0E00 <= code <= 0x0E7F:
             counts['thai'] += 1
+        elif 0x0C00 <= code <= 0x0C7F:
+            counts['telugu'] += 1
+        elif 0x0B80 <= code <= 0x0BFF:
+            counts['tamil'] += 1
+        elif 0x0D00 <= code <= 0x0D7F:
+            counts['malayalam'] += 1
+        elif 0x0C80 <= code <= 0x0CFF:
+            counts['kannada'] += 1
         elif ch.isalpha():
             counts['latin'] += 1
 
@@ -416,6 +681,10 @@ _TRANLITERATORS = {
     'greek': _transliterate_greek,
     'hebrew': _transliterate_hebrew,
     'thai': _transliterate_thai,
+    'telugu': _transliterate_telugu,
+    'tamil': _transliterate_tamil,
+    'malayalam': _transliterate_malayalam,
+    'kannada': _transliterate_kannada,
 }
 
 
