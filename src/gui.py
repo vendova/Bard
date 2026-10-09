@@ -647,6 +647,12 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             processing_label=processing_label
         )
         # Return preview path for display + download, keep session_state intact
+        # Validate final output — guard against 0-byte / missing files
+        # so the UI never serves a broken video.
+        if not preview_path or not os.path.exists(preview_path) or os.path.getsize(preview_path) < 1000:
+            console_logger.line("⚠️  Final output missing or too small; render may have failed.")
+            return None, "❌ Error: Render produced no valid output. Check console for details.", session_state, gr.update(visible=False)
+
         return preview_path, status_msg, session_state, preview_path
 
     except Exception as e:
