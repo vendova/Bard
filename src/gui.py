@@ -107,6 +107,7 @@ gpu_data = GPU_INFO
 gpu_info = f"{gpu_data['name']} ({gpu_data['cuda_version']})" if gpu_data['available'] else "CPU Mode"
 
 from video_processor import create_music_video
+from video_effects import EffectsConfig, parse_effects_from_ui, TRANSITION_TYPES
 
 from auto_mode import analyze_beats_auto
 
@@ -353,6 +354,7 @@ def _as_existing_source_paths(file_paths: VideoFilesInput) -> list[str]:
 def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        output_filename: str, processing_mode: str,
                        custom_fps: float, session_state: dict,
+                       effects_config: EffectsConfig = None,
                        progress_callback: Callable[[str], None] | None = None,
                        console_logger: StageConsoleLogger | None = None) -> StatusResult:
     total_started = time.perf_counter()
@@ -447,7 +449,8 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             local_audio_path, local_video_paths, selected_beats,
             output_file=temp_output, max_workers=parallel_workers,
             beat_info=beat_info, lossless_mode=is_prores,
-            use_gpu=use_gpu, gpu_encoder=gpu_encoder, fps=output_fps
+            use_gpu=use_gpu, gpu_encoder=gpu_encoder, fps=output_fps,
+            effects_config=effects_config,
         )
 
         # Move to output folder
@@ -551,7 +554,28 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
 
 def process_video(audio_file: str, video_files: VideoFilesInput,
                  output_filename: str, processing_mode: str,
-                 custom_fps: float, session_state: dict) -> Iterator[StatusResult]:
+                 custom_fps: float, session_state: dict,
+                 effects_enabled: bool = False,
+                 gradient_overlay: bool = False,
+                 vignette: bool = False,
+                 zoom_punch: bool = False,
+                 shake: bool = False,
+                 flash_on_beat: bool = False,
+                 color_boost: bool = False,
+                 glitch: bool = False,
+                 mirror: bool = False,
+                 slow_motion: bool = False,
+                 slow_motion_factor: float = 2.0,
+                 transition_type: str = 'none',
+                 transition_duration: float = 0.35,
+                 vignette_strength: float = 0.4,
+                 zoom_punch_strength: float = 1.06,
+                 shake_strength: float = 8.0,
+                 flash_intensity: float = 0.6,
+                 color_boost_amount: float = 1.3,
+                 glitch_strength: float = 0.3,
+                 slow_motion_probability: float = 0.15,
+                 ) -> Iterator[StatusResult]:
     status_queue: queue.Queue[str | None] = queue.Queue()
     result_queue: queue.Queue[StatusResult] = queue.Queue(maxsize=1)
     initial_status = _stage_status(1)
@@ -567,6 +591,28 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
     def worker() -> None:
         try:
             with contextlib.redirect_stdout(quiet_console), contextlib.redirect_stderr(quiet_console):
+                effects_config = parse_effects_from_ui(
+                    enabled=effects_enabled,
+                    gradient_overlay=gradient_overlay,
+                    vignette=vignette,
+                    zoom_punch=zoom_punch,
+                    shake=shake,
+                    flash_on_beat=flash_on_beat,
+                    color_boost=color_boost,
+                    glitch=glitch,
+                    mirror=mirror,
+                    slow_motion=slow_motion,
+                    slow_motion_factor=slow_motion_factor,
+                    transition_type=transition_type,
+                    transition_duration=transition_duration,
+                    vignette_strength=vignette_strength,
+                    zoom_punch_strength=zoom_punch_strength,
+                    shake_strength=shake_strength,
+                    flash_intensity=flash_intensity,
+                    color_boost_amount=color_boost_amount,
+                    glitch_strength=glitch_strength,
+                    slow_motion_probability=slow_motion_probability,
+                )
                 result = _process_video_impl(
                     audio_file=audio_file,
                     video_files=video_files,
@@ -574,6 +620,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                     processing_mode=processing_mode,
                     custom_fps=custom_fps,
                     session_state=session_state,
+                    effects_config=effects_config,
                     progress_callback=progress_callback,
                     console_logger=console_logger,
                 )
@@ -679,6 +726,43 @@ def create_ui() -> gr.Blocks:
                     gr.Markdown('### 📁 Output Settings')
                     output_filename = gr.Textbox(value='music_video.mp4', label=LABEL_OUTPUT_FILENAME, info=INFO_OUTPUT_FILENAME)
 
+                with gr.Accordion('✨ Visual Effects & Transitions', open=False):
+                    effects_enabled = gr.Checkbox(value=False, label=LABEL_EFFECTS_ENABLED, info=INFO_EFFECTS_ENABLED)
+                    with gr.Row():
+                        gradient_overlay = gr.Checkbox(value=False, label=LABEL_GRADIENT_OVERLAY, info=INFO_GRADIENT_OVERLAY)
+                        vignette = gr.Checkbox(value=False, label=LABEL_VIGNETTE, info=INFO_VIGNETTE)
+                    with gr.Row():
+                        zoom_punch = gr.Checkbox(value=False, label=LABEL_ZOOM_PUNCH, info=INFO_ZOOM_PUNCH)
+                        shake = gr.Checkbox(value=False, label=LABEL_SHAKE, info=INFO_SHAKE)
+                    with gr.Row():
+                        flash_on_beat = gr.Checkbox(value=False, label=LABEL_FLASH_BEAT, info=INFO_FLASH_BEAT)
+                        color_boost = gr.Checkbox(value=False, label=LABEL_COLOR_BOOST, info=INFO_COLOR_BOOST)
+                    with gr.Row():
+                        glitch = gr.Checkbox(value=False, label=LABEL_GLITCH, info=INFO_GLITCH)
+                        mirror = gr.Checkbox(value=False, label=LABEL_MIRROR, info=INFO_MIRROR)
+                    with gr.Row():
+                        slow_motion = gr.Checkbox(value=False, label=LABEL_SLOW_MOTION, info=INFO_SLOW_MOTION)
+                        slow_motion_factor = gr.Number(value=2.0, minimum=1.25, maximum=4.0, step=0.25, label=LABEL_SLOW_MOTION_FACTOR, info=INFO_SLOW_MOTION_FACTOR)
+                    with gr.Row():
+                        transition_type = gr.Dropdown(
+                            choices=[(label, key) for key, label in TRANSITION_TYPES.items()],
+                            value='none',
+                            label=LABEL_TRANSITION_TYPE,
+                            info=INFO_TRANSITION_TYPE,
+                        )
+                        transition_duration = gr.Slider(0.1, 1.0, value=0.35, step=0.05, label=LABEL_TRANSITION_DURATION, info=INFO_TRANSITION_DURATION)
+                    with gr.Accordion('🎚️ Fine-tune Effect Strengths', open=False):
+                        with gr.Row():
+                            vignette_strength = gr.Slider(0.1, 1.0, value=0.4, step=0.05, label=LABEL_VIGNETTE_STRENGTH)
+                            zoom_punch_strength = gr.Slider(1.01, 1.5, value=1.06, step=0.01, label=LABEL_ZOOM_PUNCH_STRENGTH)
+                        with gr.Row():
+                            shake_strength = gr.Slider(2, 40, value=8, step=1, label=LABEL_SHAKE_STRENGTH)
+                            flash_intensity = gr.Slider(0.1, 1.0, value=0.6, step=0.05, label=LABEL_FLASH_INTENSITY)
+                        with gr.Row():
+                            color_boost_amount = gr.Slider(1.0, 2.0, value=1.3, step=0.05, label=LABEL_COLOR_BOOST_AMOUNT)
+                            glitch_strength = gr.Slider(0.05, 1.0, value=0.3, step=0.05, label=LABEL_GLITCH_STRENGTH)
+                        slow_motion_probability = gr.Slider(0.0, 1.0, value=0.15, step=0.05, label=LABEL_SLOW_MOTION_PROBABILITY)
+
                 process_btn = gr.Button('🎬 Create Music Video', variant='primary', size='lg')
 
             with gr.Column(scale=1):
@@ -691,7 +775,16 @@ def create_ui() -> gr.Blocks:
             inputs=[
                 audio_input, video_input,
                 output_filename, processing_mode, custom_fps,
-                session_state
+                session_state,
+                effects_enabled,
+                gradient_overlay, vignette, zoom_punch, shake,
+                flash_on_beat, color_boost, glitch, mirror,
+                slow_motion, slow_motion_factor,
+                transition_type, transition_duration,
+                vignette_strength, zoom_punch_strength,
+                shake_strength, flash_intensity,
+                color_boost_amount, glitch_strength,
+                slow_motion_probability,
             ],
             outputs=[video_output, status_output, session_state],
             show_progress='hidden'

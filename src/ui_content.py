@@ -339,6 +339,57 @@ INFO_PARALLEL_WORKERS = "Clips processed simultaneously. More workers with GPU."
 LABEL_OUTPUT_FILENAME = "📝 Output Filename"
 INFO_OUTPUT_FILENAME = "Timestamp added automatically (.mkv or .mov)"
 
+# ============================================================================
+# EFFECTS LABELS & INFO
+# ============================================================================
+
+LABEL_EFFECTS_ENABLED = "✨ Enable Visual Effects"
+INFO_EFFECTS_ENABLED = "Master toggle for all effect controls below"
+
+LABEL_GRADIENT_OVERLAY = "🌈 Gradient Color Overlay"
+INFO_GRADIENT_OVERLAY = "Subtle color wash overlay on clips"
+
+LABEL_VIGNETTE = "🔴 Vignette"
+INFO_VIGNETTE = "Darkened edges for cinematic focus"
+
+LABEL_ZOOM_PUNCH = "🔍 Zoom Punch"
+INFO_ZOOM_PUNCH = "Subtle zoom-in motion on each clip"
+
+LABEL_SHAKE = "📳 Camera Shake"
+INFO_SHAKE = "Beat-synced shake effect"
+
+LABEL_FLASH_BEAT = "⚡ Flash on Beat"
+INFO_FLASH_BEAT = "White flash at start of each cut"
+
+LABEL_COLOR_BOOST = "🎨 Color Boost"
+INFO_COLOR_BOOST = "Enhanced saturation and contrast"
+
+LABEL_GLITCH = "📺 Glitch Effect"
+INFO_GLITCH = "Digital glitch displacement on clips"
+
+LABEL_MIRROR = "🪞 Random Mirror"
+INFO_MIRROR = "Random horizontal flip for variety"
+
+LABEL_SLOW_MOTION = "🐢 Slow Motion"
+INFO_SLOW_MOTION = "Speed-reduced clips for dramatic moments"
+
+LABEL_SLOW_MOTION_FACTOR = "🐌 Slow Motion Factor"
+INFO_SLOW_MOTION_FACTOR = "2.0 = half speed, 3.0 = third speed"
+
+LABEL_TRANSITION_TYPE = "🔀 Transition Type"
+INFO_TRANSITION_TYPE = "Transition effect between clips (uses xfade re-encode)"
+
+LABEL_TRANSITION_DURATION = "⏱️ Transition Duration (s)"
+INFO_TRANSITION_DURATION = "Length of each transition overlap"
+
+LABEL_VIGNETTE_STRENGTH = "Vignette Strength"
+LABEL_ZOOM_PUNCH_STRENGTH = "Zoom Strength"
+LABEL_SHAKE_STRENGTH = "Shake Strength (px)"
+LABEL_FLASH_INTENSITY = "Flash Intensity"
+LABEL_COLOR_BOOST_AMOUNT = "Color Boost Amount"
+LABEL_GLITCH_STRENGTH = "Glitch Strength"
+LABEL_SLOW_MOTION_PROBABILITY = "Slow Motion Probability"
+
 def get_gpu_status_info(gpu_available, gpu_info, nvenc_available):
     """GPU status info."""
     if gpu_available and nvenc_available:

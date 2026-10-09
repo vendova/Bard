@@ -46,6 +46,12 @@ from ffmpeg_processing import (
     seconds_to_frame_count,
     frame_count_to_seconds,
 )
+from video_effects import (
+    EffectsConfig,
+    build_clip_effect_filters,
+    needs_transitions,
+    apply_transitions_ffmpeg,
+)
 from auto_mode.stage6_av_planner import build_planned_clip_sequence, summarize_clip_plan
 
 # Import mode modules
@@ -257,30 +263,56 @@ def create_clip_parallel(args):
 
     Auto Mode usually passes a planned source moment. If visual planning is not
     available, this worker samples forward source content as a fallback.
+
+    Effects: when an EffectsConfig tuple is present in args (10th element),
+    per-clip visual effect filters are generated and injected into the FFmpeg
+    filter chain.  Slow motion adjusts the source extraction duration so the
+    slowed clip still fills its beat-synced timeline slot.
     """
     clip_started = time.perf_counter()
     planned_clip = None
-    if len(args) >= 9:
+    effects_cfg = None
+    if len(args) >= 10:
+        (i, video_file, final_duration, target_size,
+         use_nvenc, gpu_encoder, temp_dir, fps, planned_clip, effects_cfg) = args
+    elif len(args) >= 9:
         (i, video_file, final_duration, target_size,
          use_nvenc, gpu_encoder, temp_dir, fps, planned_clip) = args
     else:
         (i, video_file, final_duration, target_size,
          use_nvenc, gpu_encoder, temp_dir, fps) = args
-    
+
     try:
+        # Generate per-clip effect filters (may also return a speed_factor
+        # for slow motion, which inflates the source extraction duration).
+        clip_effect_filters = []
+        speed_factor = None
+        if effects_cfg is not None:
+            clip_effect_filters, speed_factor = build_clip_effect_filters(
+                effects_cfg, i, final_duration, fps, target_size,
+            )
+
+        # When slow motion is active, the extraction function handles the
+        # source-duration reduction internally via speed_factor.  We pass the
+        # *target* duration so output fills the correct timeline slot.
+        effective_duration = final_duration
+        if speed_factor is not None and speed_factor > 1.0:
+            # For source selection, we need the reduced duration (D/sf).
+            effective_duration = final_duration / speed_factor
+
         if planned_clip:
             video_file = planned_clip.get('video_file') or video_file
             video_duration = get_video_duration(video_file)
-            source_duration = float(planned_clip.get('source_duration', final_duration))
+            source_duration = float(planned_clip.get('source_duration', effective_duration))
             source_duration = max(0.05, min(source_duration, video_duration))
             max_start = max(0.0, video_duration - source_duration)
             clip_start = max(0.0, min(float(planned_clip.get('start_time', 0.0)), max_start))
         else:
             # Random start time from video if visual planning is unavailable.
             video_duration = get_video_duration(video_file)
-            
-            required_source_duration = final_duration
-            
+
+            required_source_duration = effective_duration
+
             if video_duration >= required_source_duration:
                 max_start = video_duration - required_source_duration
                 clip_start = random.uniform(0, max_start)
@@ -288,28 +320,32 @@ def create_clip_parallel(args):
             else:
                 clip_start = 0
                 source_duration = video_duration
-            
-        
+
+
         # Output file
         temp_clip_path = os.path.join(temp_dir, f"temp_clip_{i}_{uuid.uuid4().hex}.mp4")
-        
+
         extract_kwargs = {
             'video_file': video_file,
             'start_time': clip_start,
-            'duration': source_duration,
+            'duration': final_duration,
             'output_file': temp_clip_path,
             'fps': fps,
             'target_size': target_size,
             'use_nvenc': use_nvenc,
             'gpu_encoder': gpu_encoder,
         }
+        if clip_effect_filters:
+            extract_kwargs['extra_filters'] = clip_effect_filters
+        if speed_factor is not None and speed_factor > 1.0:
+            extract_kwargs['speed_factor'] = speed_factor
 
         success = extract_clip_segment_ffmpeg(**extract_kwargs)
-        
+
         elapsed = time.perf_counter() - clip_started
         if not success:
             return (i, None, target_size, None, "FFmpeg extraction failed", elapsed)
-        
+
         return (i, temp_clip_path, target_size, temp_clip_path, None, elapsed)
         
     except Exception as e:
@@ -323,7 +359,8 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                       max_workers: int = None,
                       beat_info: dict = None,
                       lossless_mode: bool = False, use_gpu: bool = False, 
-                      gpu_encoder: str = 'h264_nvenc', fps: float = None) -> str:
+                      gpu_encoder: str = 'h264_nvenc', fps: float = None,
+                      effects_config: EffectsConfig = None) -> str:
     """
     Creates a music video with video clips cut to detected beats.
     
@@ -612,7 +649,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             video_file = planned_clip.get('video_file') if planned_clip else random.choice(video_files)
             clip_args.append((i, video_file, final_duration,
                             target_size, use_nvenc, gpu_encoder, session_temp_dir, fps,
-                            planned_clip))
+                            planned_clip, effects_config))
         
         clip_files = [None] * len(clip_args)
         clip_timings: List[float] = []
@@ -678,19 +715,37 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         print(f"🎬 FINAL ASSEMBLY: Concatenating {len(clip_files)} clips")
         print(f"{'='*60}\n")
         
-        # Concatenate all clips and add audio
+        # Concatenate all clips and add audio.
+        # When transitions are enabled, use xfade-based concatenation instead
+        # of the hard-cut concat demuxer.
         assembly_started = time.perf_counter()
-        concatenate_videos_ffmpeg(
-            video_files=clip_files,
-            output_file=output_file,
-            audio_file=audio_file,
-            start_time=start_time,
-            end_time=end_time,
-            use_nvenc=use_nvenc,
-            gpu_encoder=gpu_encoder,
-            fps=fps,
-            temp_dir=session_temp_dir
-        )
+        if effects_config is not None and needs_transitions(effects_config):
+            print(f"   🎭 Transition mode: {effects_config.transition_type} "
+                  f"({effects_config.transition_duration}s)")
+            apply_transitions_ffmpeg(
+                clip_files=clip_files,
+                output_file=output_file,
+                audio_file=audio_file,
+                start_time=start_time,
+                end_time=end_time,
+                cfg=effects_config,
+                fps=fps,
+                use_nvenc=use_nvenc,
+                gpu_encoder=gpu_encoder,
+                temp_dir=session_temp_dir,
+            )
+        else:
+            concatenate_videos_ffmpeg(
+                video_files=clip_files,
+                output_file=output_file,
+                audio_file=audio_file,
+                start_time=start_time,
+                end_time=end_time,
+                use_nvenc=use_nvenc,
+                gpu_encoder=gpu_encoder,
+                fps=fps,
+                temp_dir=session_temp_dir
+            )
         assembly_seconds = time.perf_counter() - assembly_started
         render_info["final_assembly_seconds"] = float(assembly_seconds)
         print(f"   ⏱ Final assembly total: {_fmt_seconds(assembly_seconds)}")

@@ -298,32 +298,50 @@ def convert_to_prores_proxy(video_file: str, output_dir: str, fps: float = None)
 def extract_clip_segment_ffmpeg(video_file: str, start_time: float, duration: float,
                                 output_file: str, fps: float, target_size: Tuple[int, int],
                                 use_nvenc: bool,
-                                gpu_encoder: str = 'h264_nvenc') -> bool:
+                                gpu_encoder: str = 'h264_nvenc',
+                                extra_filters: list = None,
+                                speed_factor: float = None) -> bool:
     """
     Extract a video segment using FFmpeg with FRAME-ACCURATE timing.
     
     ✅ FRAME-ACCURATE: Uses exact frame counts instead of floating-point seconds
     ✅ ZERO DRIFT: No cumulative timing errors
+    ✅ EFFECTS: Optional extra_filters injected into the -vf chain
     """
     try:
         # ✅ FRAME-ACCURATE: Calculate exact source and output frame counts.
-        source_frame_count = max(1, seconds_to_frame_count(duration, fps))
+        # When slow motion (speed_factor > 1) is active, extract less source
+        # content (duration / sf) and slow it via setpts so the output fills
+        # the full target timeline slot at the correct frame rate.
+        sf = speed_factor if speed_factor and speed_factor > 1.0 else 1.0
+        source_extraction_duration = duration / sf
+        source_frame_count = max(1, seconds_to_frame_count(source_extraction_duration, fps))
         exact_source_duration = frame_count_to_seconds(source_frame_count, fps)
-        output_frame_count = source_frame_count
+        # Output fills the *target* duration at full fps.
+        output_frame_count = max(1, seconds_to_frame_count(duration, fps))
 
         # Build filter complex
         filters = []
 
         # Trim first so each extracted segment has exact timing.
         filters.extend([f"trim=duration={exact_source_duration}", "setpts=PTS-STARTPTS"])
-        
+
+        # Slow motion: stretch timestamps before scaling/fps so frame
+        # duplication maintains constant output fps.
+        if sf > 1.0:
+            filters.append(f"setpts={sf:.4f}*PTS")
+
         # Scale to target size
         if target_size:
             width, height = target_size
             filters.append(f"scale={width}:{height}")
         
-        # FPS filter
+        # FPS filter (duplicates frames as needed after setpts stretch)
         filters.append(f"fps={fps}")
+        
+        # Inject caller-supplied effect filters (gradient, vignette, zoom, etc.)
+        if extra_filters:
+            filters.extend(extra_filters)
         
         filter_complex = ",".join(filters)
         
