@@ -129,15 +129,37 @@ StatusResult : TypeAlias = Tuple[str, str, Dict, object]
 
 STATUS_BOX_CSS = """
 #status-output-box {
-    min-height: 238px !important;
+    min-height: 420px !important;
 }
 
 #status-output-box textarea {
-    height: 186px !important;
-    min-height: 186px !important;
-    max-height: 186px !important;
+    height: 400px !important;
+    min-height: 400px !important;
+    max-height: 400px !important;
     overflow-y: auto !important;
     resize: none !important;
+    font-family: 'SFMono-Regular', 'Cascadia Code', 'Consolas', 'Liberation Mono', monospace !important;
+    font-size: 12.5px !important;
+    line-height: 1.55 !important;
+    background: #0d1117 !important;
+    color: #c9d1d9 !important;
+}
+"""
+
+
+# Auto-click the download button once a render finishes so the MP4 begins
+# downloading immediately without the user having to press anything. Retries
+# briefly because Gradio applies the visibility/value update asynchronously.
+_AUTO_DOWNLOAD_JS = """
+() => {
+  const tryClick = (n) => {
+    const el = document.getElementById('download-video-btn');
+    if (!el) { if (n < 25) setTimeout(() => tryClick(n + 1), 200); return; }
+    const btn = el.querySelector('button') || el;
+    if (btn && !btn.disabled && btn.offsetParent !== null) { btn.click(); return; }
+    if (n < 25) setTimeout(() => tryClick(n + 1), 200);
+  };
+  tryClick(0);
 }
 """
 
@@ -146,14 +168,40 @@ def _stage_status(stage_number: int) -> str:
     return f"Stage {stage_number} is processing. Please wait."
 
 
-class QuietConsole:
-    """Discard legacy verbose prints while the Gradio worker runs."""
+class LiveLogCapture:
+    """Tee stdout to a real sink (server log) while streaming complete
+    lines to a callback so they appear live in the Gradio status box."""
+
+    def __init__(self, sink, on_line):
+        self.sink = sink
+        self.on_line = on_line
+        self._buf = ""
 
     def write(self, text: str) -> int:
+        if not text:
+            return 0
+        if self.sink is not None:
+            try:
+                self.sink.write(text)
+            except Exception:
+                pass
+        self._buf += text
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            line = line.rstrip()
+            if line:
+                try:
+                    self.on_line(line)
+                except Exception:
+                    pass
         return len(text)
 
     def flush(self) -> None:
-        pass
+        if self.sink is not None:
+            try:
+                self.sink.flush()
+            except Exception:
+                pass
 
 
 class StageConsoleLogger:
@@ -747,7 +795,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             console_logger.line("⚠️  Final output missing or too small; render may have failed.")
             return None, "❌ Error: Render produced no valid output. Check console for details.", session_state, gr.update(visible=False)
 
-        return preview_path, status_msg, session_state, preview_path
+        return preview_path, status_msg, session_state, gr.update(visible=True, value=preview_path)
 
     except Exception as e:
         error_msg = f"❌ Error: {str(e)}"
@@ -788,9 +836,15 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  ) -> Iterator[StatusResult]:
     status_queue: queue.Queue[str | None] = queue.Queue()
     result_queue: queue.Queue[StatusResult] = queue.Queue(maxsize=1)
-    initial_status = _stage_status(1)
-    console_logger = StageConsoleLogger(sys.__stdout__)
-    quiet_console = QuietConsole()
+    log_lines: list[str] = []
+    render_started = time.perf_counter()
+
+    def push_line(line: str) -> None:
+        log_lines.append(line)
+        status_queue.put(line)
+
+    log_capture = LiveLogCapture(sys.__stdout__, push_line)
+    console_logger = StageConsoleLogger(log_capture)
 
     # Resolve "Random" selections — pick a random font combo and/or
     # transition preset so each render produces different results.
@@ -811,7 +865,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
 
     def worker() -> None:
         try:
-            with contextlib.redirect_stdout(quiet_console), contextlib.redirect_stderr(quiet_console):
+            with contextlib.redirect_stdout(log_capture), contextlib.redirect_stderr(log_capture):
                 effects_config = parse_effects_from_ui(
                     enabled=effects_enabled,
                     gradient_overlay=gradient_overlay,
@@ -863,16 +917,21 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
     console_logger.start_stage(1)
     thread.start()
 
-    last_status = initial_status
-    yield None, initial_status, session_state, gr.update(visible=False)
+    max_log_lines = 60
+
+    def render_feed() -> str:
+        elapsed = time.perf_counter() - render_started
+        header = f"⏱️ {elapsed:0.1f}s elapsed  |  {len(log_lines)} log lines"
+        tail = log_lines[-max_log_lines:]
+        return header + "\n" + "\n".join(tail)
+
+    yield None, render_feed(), session_state, gr.update(visible=False)
 
     while True:
         message = status_queue.get()
         if message is None:
             break
-        if message != last_status:
-            last_status = message
-            yield None, message, session_state, gr.update(visible=False)
+        yield None, render_feed(), session_state, gr.update(visible=False)
 
     thread.join()
     yield result_queue.get()
@@ -1087,7 +1146,7 @@ def create_ui() -> gr.Blocks:
 
             with gr.Column(scale=1):
                 gr.Markdown('### 📺 Output')
-                status_output = gr.Textbox(label='Status', interactive=False, value=get_ready_status(python_status, cuda_status, MAX_THREADS, CPU_COUNT, ffmpeg_status, GPU_AVAILABLE, gpu_info, NVENC_AVAILABLE), lines=4, max_lines=4, elem_id='status-output-box')
+                status_output = gr.Textbox(label='Live Processing Log', interactive=False, value=get_ready_status(python_status, cuda_status, MAX_THREADS, CPU_COUNT, ffmpeg_status, GPU_AVAILABLE, gpu_info, NVENC_AVAILABLE), lines=20, max_lines=20, elem_id='status-output-box', autoscroll=True)
                 video_output = gr.Video(label='Generated Music Video', format='mp4', interactive=False, elem_id='generated-video-output')
                 download_btn = gr.DownloadButton('⬇️ Download MP4', variant='secondary', visible=False, elem_id='download-video-btn')
 
@@ -1117,6 +1176,9 @@ def create_ui() -> gr.Blocks:
             inputs=_shared_inputs,
             outputs=_shared_outputs,
             show_progress='hidden'
+        ).then(
+            fn=None,
+            js=_AUTO_DOWNLOAD_JS,
         )
 
         regenerate_btn.click(
@@ -1124,6 +1186,9 @@ def create_ui() -> gr.Blocks:
             inputs=_shared_inputs,
             outputs=_shared_outputs,
             show_progress='hidden'
+        ).then(
+            fn=None,
+            js=_AUTO_DOWNLOAD_JS,
         )
 
     return app
