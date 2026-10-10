@@ -104,6 +104,40 @@ def resolve_output_resolution(width: int, height: int) -> Tuple[int, int]:
     return (new_w, new_h)
 
 
+def resolve_capped_resolution(width: int, height: int,
+                              max_w: int, max_h: int) -> Tuple[int, int]:
+    """Downscale to an explicit ceiling (used for the low-quality draft pass)."""
+    if width <= 0 or height <= 0:
+        return (width, height)
+    max_w = max(2, int(max_w))
+    max_h = max(2, int(max_h))
+    scale = min(1.0, max_w / float(width), max_h / float(height))
+    new_w = max(2, int(round(width * scale))) & ~1
+    new_h = max(2, int(round(height * scale))) & ~1
+    return (new_w, new_h)
+
+
+def draft_mode_enabled() -> bool:
+    """Whether clips should be encoded as a fast, low-quality proxy."""
+    return _env_flag('BEATSYNC_DRAFT', False)
+
+
+def draft_crf() -> str:
+    return os.environ.get('BEATSYNC_DRAFT_CRF', '30').strip() or '30'
+
+
+def draft_preset() -> str:
+    return os.environ.get('BEATSYNC_DRAFT_PRESET', 'ultrafast').strip() or 'ultrafast'
+
+
+def draft_max_width() -> int:
+    return _env_int('BEATSYNC_DRAFT_MAX_WIDTH', 960, lo=160)
+
+
+def draft_max_height() -> int:
+    return _env_int('BEATSYNC_DRAFT_MAX_HEIGHT', 540, lo=120)
+
+
 def _run_media_command(cmd: List[str], timeout: int) -> subprocess.CompletedProcess[str]:
     """Run an FFmpeg/FFprobe command with consistent capture settings."""
     return subprocess.run(
@@ -202,14 +236,13 @@ def get_clip_h264_quality_args(include_pix_fmt: bool = True) -> List[str]:
     """Bounded-quality CPU H.264 settings for intermediate/render clips.
 
     Uses a high CRF instead of lossless ``-crf 0`` so each beat clip stays a
-    few MB rather than tens of MB. This keeps disk usage and the final xfade
-    assembly (which decodes every clip) tractable without visible quality loss.
+    few MB rather than tens of MB. When draft mode is on, a lower resolution
+    plus crf 30/ultrafast is used for a fast, throwaway preview pass.
     """
-    args = [
-        '-c:v', 'libx264',
-        '-preset', cpu_encode_preset(),
-        '-crf', playback_crf(),
-    ]
+    if draft_mode_enabled():
+        args = ['-c:v', 'libx264', '-preset', draft_preset(), '-crf', draft_crf()]
+    else:
+        args = ['-c:v', 'libx264', '-preset', cpu_encode_preset(), '-crf', playback_crf()]
     if include_pix_fmt:
         args.extend(['-pix_fmt', 'yuv420p'])
     args.extend(['-threads', str(MAX_THREADS)])
@@ -218,14 +251,23 @@ def get_clip_h264_quality_args(include_pix_fmt: bool = True) -> List[str]:
 
 def get_nvenc_clip_quality_args(gpu_encoder: str, include_pix_fmt: bool = True) -> List[str]:
     """Bounded-quality NVENC settings for intermediate/render clips."""
-    args = [
-        '-c:v', gpu_encoder,
-        '-preset', 'p5',
-        '-tune', 'hq' if gpu_encoder == 'h264_nvenc' else 'uhq',
-        '-rc', 'vbr',
-        '-b:v', '0',
-        '-cq', playback_cq(),
-    ]
+    if draft_mode_enabled():
+        args = [
+            '-c:v', gpu_encoder,
+            '-preset', 'p1',
+            '-rc', 'vbr',
+            '-b:v', '0',
+            '-cq', '35',
+        ]
+    else:
+        args = [
+            '-c:v', gpu_encoder,
+            '-preset', 'p5',
+            '-tune', 'hq' if gpu_encoder == 'h264_nvenc' else 'uhq',
+            '-rc', 'vbr',
+            '-b:v', '0',
+            '-cq', playback_cq(),
+        ]
     if gpu_encoder == 'h264_nvenc':
         args.extend(['-profile:v', 'high'])
     elif gpu_encoder == 'hevc_nvenc':

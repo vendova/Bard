@@ -76,4 +76,16 @@ than lossless, so renders stay small and assembly stays fast):
   export BEATSYNC_CLIP_MAX_HEIGHT=1080
   export BEATSYNC_CLIP_MAX_MB=200        # per-clip size ceiling (0 = off)
   export BEATSYNC_MAX_OUTPUT_MB=200      # final output cap (2x input by default)
+
+Draft workflow (fast low-quality preview, then a full-quality final):
+  # Preview pass: small proxy clips + a manifest of the exact edit
+  BEATSYNC_DRAFT=1 python src/gui.py     # or tick "Draft Mode" in the UI
+  # Tune the edit, then rebuild the identical cut at full quality:
+  python scripts/render_final_from_draft.py --latest
+
+Draft knobs (proxy quality for the preview pass only):
+  export BEATSYNC_DRAFT_CRF=30           # higher = faster/smaller preview
+  export BEATSYNC_DRAFT_PRESET=ultrafast
+  export BEATSYNC_DRAFT_MAX_WIDTH=960
+  export BEATSYNC_DRAFT_MAX_HEIGHT=540
 EOF

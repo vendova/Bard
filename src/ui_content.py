@@ -359,6 +359,13 @@ INFO_QWEN_SEMANTICS = (
     "analysis — the legacy planner will be used instead."
 )
 
+LABEL_DRAFT_MODE = "⚡ Draft Mode (fast, low-quality preview)"
+INFO_DRAFT_MODE = (
+    "Renders a fast, low-quality proxy (small resolution, high CRF) and writes the edit decision "
+    "list to input/drafts/. Check the cut, then run scripts/render_final_from_draft.py on the "
+    "manifest to rebuild the identical edit at full quality."
+)
+
 LABEL_RESUME_SECTION = "♻️ Resume Last Render"
 INFO_RESUME_SECTION = (
     "After a refresh, crash, or host restart (e.g. a memory-limit kill), reconnect to your last "

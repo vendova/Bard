@@ -1040,6 +1040,66 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  qwen_semantics: bool = True,
                  regenerate: bool = False,
                  resume_job_id: str | None = None,
+                 draft_mode: bool = False,
+                 ) -> Iterator[StatusResult]:
+    status_queue: queue.Queue[str | None] = queue.Queue()
+    result_queue: queue.Queue[StatusResult] = queue.Queue(maxsize=1)
+    log_lines: list[str] = []
+    render_started = time.perf_counter()
+
+    # Draft toggle drives the low-quality proxy pass. process_video is a
+    # generator, so this runs at call time; the render passes below are fully
+    # synchronous, so clearing it in a finally block is safe and isolated.
+    os.environ.pop("BEATSYNC_DRAFT", None)
+    if draft_mode:
+        os.environ["BEATSYNC_DRAFT"] = "1"
+    try:
+        yield from _process_video_impl(
+            audio_file, video_files, output_filename, processing_mode,
+            custom_fps, session_state, zip_file, effects_enabled,
+            gradient_overlay, vignette, zoom_punch, shake, flash_on_beat,
+            color_boost, glitch, mirror, slow_motion, slow_motion_factor,
+            transition_type, transition_duration, vignette_strength,
+            zoom_punch_strength, shake_strength, flash_intensity,
+            color_boost_amount, glitch_strength, slow_motion_probability,
+            smart_sync, lyrics_text, font_combo_name, transition_preset_name,
+            qwen_semantics, regenerate, resume_job_id,
+        )
+    finally:
+        os.environ.pop("BEATSYNC_DRAFT", None)
+
+
+def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
+                 output_filename: str, processing_mode: str,
+                 custom_fps: float, session_state: dict,
+                 zip_file: str | None = None,
+                 effects_enabled: bool = False,
+                 gradient_overlay: bool = False,
+                 vignette: bool = False,
+                 zoom_punch: bool = False,
+                 shake: bool = False,
+                 flash_on_beat: bool = False,
+                 color_boost: bool = False,
+                 glitch: bool = False,
+                 mirror: bool = False,
+                 slow_motion: bool = False,
+                 slow_motion_factor: float = 2.0,
+                 transition_type: str = 'none',
+                 transition_duration: float = 0.35,
+                 vignette_strength: float = 0.4,
+                 zoom_punch_strength: float = 1.06,
+                 shake_strength: float = 8.0,
+                 flash_intensity: float = 0.6,
+                 color_boost_amount: float = 1.3,
+                 glitch_strength: float = 0.3,
+                 slow_motion_probability: float = 0.15,
+                 smart_sync: bool = False,
+                 lyrics_text: str = "",
+                 font_combo_name: str = "",
+                 transition_preset_name: str = "",
+                 qwen_semantics: bool = True,
+                 regenerate: bool = False,
+                 resume_job_id: str | None = None,
                  ) -> Iterator[StatusResult]:
     status_queue: queue.Queue[str | None] = queue.Queue()
     result_queue: queue.Queue[StatusResult] = queue.Queue(maxsize=1)
@@ -1226,6 +1286,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
                       font_combo_name: str = "",
                       transition_preset_name: str = "",
                       qwen_semantics: bool = True,
+                      draft_mode: bool = False,
                       ) -> Iterator[StatusResult]:
     """Re-render with updated settings, reusing cached beat analysis.
 
@@ -1245,6 +1306,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
             slow_motion_probability,
             smart_sync, lyrics_text, font_combo_name,
             transition_preset_name, qwen_semantics,
+            False, None, draft_mode,
         )
         return
 
@@ -1261,7 +1323,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
         slow_motion_probability,
         smart_sync, lyrics_text, font_combo_name,
         transition_preset_name, qwen_semantics,
-        regenerate=True,
+        regenerate=True, draft_mode=draft_mode,
     )
 
 
@@ -1340,6 +1402,11 @@ def create_ui() -> gr.Blocks:
                 with gr.Group():
                     gr.Markdown('### 📁 Output Settings')
                     output_filename = gr.Textbox(value='music_video.mp4', label=LABEL_OUTPUT_FILENAME, info=INFO_OUTPUT_FILENAME)
+                    draft_mode_enabled = gr.Checkbox(
+                        value=False,
+                        label=LABEL_DRAFT_MODE,
+                        info=INFO_DRAFT_MODE,
+                    )
 
                 with gr.Accordion('✨ Visual Effects & Transitions', open=False):
                     effects_enabled = gr.Checkbox(value=False, label=LABEL_EFFECTS_ENABLED, info=INFO_EFFECTS_ENABLED)
@@ -1443,6 +1510,7 @@ def create_ui() -> gr.Blocks:
             font_combo,
             transition_preset,
             qwen_semantics_enabled,
+            draft_mode_enabled,
         ]
         _shared_outputs = [video_output, status_output, session_state, download_btn]
 

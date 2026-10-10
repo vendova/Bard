@@ -14,6 +14,7 @@ setup_environment()
 import argparse
 import random
 import shutil
+import json
 from typing import TypeAlias, List, Dict, Tuple
 import numpy as np
 from pathlib import Path
@@ -40,6 +41,10 @@ from ffmpeg_processing import (
     get_video_fps,
     get_video_resolution,
     resolve_output_resolution,
+    resolve_capped_resolution,
+    draft_mode_enabled,
+    draft_max_width,
+    draft_max_height,
     convert_to_prores_proxy,
     extract_clip_segment_ffmpeg,
     extract_prores_segment_random,
@@ -112,6 +117,41 @@ def _effective_clip_workers(requested_workers: int, use_nvenc: bool) -> int:
         lo=1,
         hi=requested_workers,
     )
+
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _drafts_dir() -> str:
+    path = os.path.join(ROOT_DIR, "input", "drafts")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _save_draft_manifest(manifest: dict) -> str:
+    """Persist a rendered edit decision list so it can be replayed at full quality."""
+    job = manifest.get("job_id") or str(manifest.get("seed"))
+    path = os.path.join(_drafts_dir(), f"manifest_{job}.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=2)
+    return path
+
+
+def _load_draft_manifest(path: str) -> dict:
+    with open(path, "r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _clean_planned_clips(planned: List[Dict] | None) -> List[Dict]:
+    """Reduce a plan to the fields needed to reproduce the exact cut."""
+    fields = (
+        "video_file", "source_name", "start_time", "source_duration",
+        "final_duration", "target", "candidate_id",
+    )
+    out: List[Dict] = []
+    for clip in planned or []:
+        out.append({k: clip.get(k) for k in fields if k in clip})
+    return out
 
 
 def _log_disk_headroom(label: str = "") -> None:
@@ -399,6 +439,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                       variation_seed: int = None,
                       transition_preset_name: str = "",
                       job_id: str | None = None,
+                      draft_manifest: str | None = None,
                       ) -> str:
     """
     Creates a music video with video clips cut to detected beats.
@@ -464,6 +505,33 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         
     print(f"📁 Processing directory: {session_temp_dir}")
     _log_disk_headroom("start")
+
+    # ── Draft / final replay ────────────────────────────────────────────
+    # A draft render encodes fast, low-quality 540p proxy clips and writes a
+    # manifest. Replaying that manifest re-runs the *identical* edit (same
+    # seed, cuts, transitions) but at full configuration quality, so the final
+    # output is not degraded by the draft pass.
+    replay_planned: List[Dict] = []
+    replay_transitions: List[str] = []
+    replay_overrides: List[Dict] = []
+    is_draft = draft_mode_enabled()
+    if draft_manifest:
+        manifest = _load_draft_manifest(draft_manifest)
+        variation_seed = manifest.get("seed")
+        replay_planned = list(manifest.get("planned_clips") or [])
+        replay_transitions = list(manifest.get("transitions") or [])
+        replay_overrides = list(manifest.get("effect_overrides") or [])
+        if manifest.get("fps"):
+            fps = float(manifest["fps"])
+        smart_sync = bool(manifest.get("smart_sync", smart_sync))
+        print(f"🎬 FINAL PASS: replaying draft {os.path.basename(draft_manifest)} at full quality")
+        print(f"   Locked seed={variation_seed}, fps={fps}, "
+              f"{len(replay_planned)} clips, {len(replay_transitions)} transitions")
+        is_draft = False
+    elif is_draft:
+        print(f"🎬 DRAFT PASS: low-quality proxy render "
+              f"(crf {os.environ.get('BEATSYNC_DRAFT_CRF', '30')}, "
+              f"≤{draft_max_width()}x{draft_max_height()}, fps={fps})")
 
     # Determine processing mode
     use_nvenc = use_gpu and NVENC_AVAILABLE and not lossless_mode and gpu_encoder != 'none'
@@ -533,8 +601,18 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         variation_seed = int(time.time() * 1000) % (2**31)
     print(f"🎲 Variation seed: {variation_seed}")
 
-    if smart_sync:
-        # ── Smart Sync mode: AI-driven energy matching ──
+    if replay_planned:
+        # Final pass: reuse the exact edit captured during the draft render.
+        planned_clip_sequence = replay_planned
+        smart_transitions_list = replay_transitions
+        smart_effect_overrides = replay_overrides
+        print(f"   ✓ Reusing {len(planned_clip_sequence)} draft clips unchanged")
+        if planned_clip_sequence:
+            plan_summary = summarize_clip_plan(planned_clip_sequence)
+            if beat_info is not None:
+                beat_info['clip_plan_summary'] = plan_summary
+            render_info["plan_summary"] = plan_summary
+    elif smart_sync:
         print(f"\n{'='*60}")
         print(f"🧠 SMART SYNC: AI-driven clip-to-beat energy matching")
         print(f"{'='*60}")
@@ -622,6 +700,32 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             print(f"   AI-tagged source moments used: {plan_summary.get('ai_tagged', 0)}")
         else:
             print("🎲 Visual planner fallback: source moments will use legacy random sampling")
+
+    # Draft pass: capture the full edit decision list so a later final pass can
+    # replay it exactly at full quality (identical seed, cuts and transitions).
+    if is_draft and planned_clip_sequence:
+        draft_manifest_out = {
+            "job_id": job_id,
+            "seed": variation_seed,
+            "fps": fps,
+            "smart_sync": smart_sync,
+            "transition_preset_name": transition_preset_name,
+            "audio_file": audio_file,
+            "video_files": list(video_files),
+            "start_time": start_time,
+            "end_time": end_time,
+            "planned_clips": _clean_planned_clips(planned_clip_sequence),
+            "transitions": list(smart_transitions_list),
+            "selected_beats": [float(b) for b in selected_beats],
+            "segment_durations": [float(d) for d in segment_durations],
+            "effect_overrides": [dict(ov) if ov else {} for ov in (smart_effect_overrides or [])],
+            "target_resolution": render_info.get("target_resolution"),
+        }
+        _path = _save_draft_manifest(draft_manifest_out)
+        draft_manifest_out["manifest_path"] = _path
+        print(f"📝 Draft manifest written: {_path}")
+        print(f"   Replay at full quality with: "
+              f"python scripts/render_final_from_draft.py {_path}")
 
     # LOSSLESS MODE - ProRes workflow with FRAME-PERFECT precision
     if lossless_mode:
@@ -778,9 +882,15 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
     else:
         # Get target resolution from first video, capped to the render ceiling
         # so intermediate clips and the final assembly stay a manageable size.
+        # A draft pass caps further to a small proxy size for fast iteration.
         source_size = get_video_resolution(video_files[0])
-        target_size = resolve_output_resolution(source_size[0], source_size[1])
+        capped_cap = (draft_max_width(), draft_max_height()) if is_draft else None
+        if capped_cap:
+            target_size = resolve_capped_resolution(source_size[0], source_size[1], *capped_cap)
+        else:
+            target_size = resolve_output_resolution(source_size[0], source_size[1])
         render_info["target_resolution"] = f"{target_size[0]}x{target_size[1]}"
+        render_info["draft"] = bool(is_draft)
         if target_size != source_size:
             print(f"🎞️ Target resolution: {target_size[0]}x{target_size[1]} "
                   f"(downscaled from {source_size[0]}x{source_size[1]})")
