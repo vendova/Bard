@@ -33,7 +33,28 @@ from PIL import Image
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 BIN_DIR = ROOT_DIR / "bin"
-DEFAULT_LLAMA_DIR = BIN_DIR / "llama-bin-win-vulkan-x64"
+
+
+def _default_llama_dir() -> Path:
+    """Locate the bundled llama.cpp backend for the current platform."""
+    candidates = (
+        ["llama-bin-win-vulkan-x64", "llama-bin-linux"]
+        if os.name == "nt"
+        else ["llama-bin-linux", "llama-bin-win-vulkan-x64"]
+    )
+    for name in candidates:
+        path = BIN_DIR / name
+        if path.exists():
+            return path
+    return BIN_DIR / candidates[0]
+
+
+def _llama_bin(llama_dir: Path, stem: str) -> Path:
+    """Resolve a llama.cpp executable name for the current platform."""
+    return llama_dir / (stem + (".exe" if os.name == "nt" else ""))
+
+
+DEFAULT_LLAMA_DIR = _default_llama_dir()
 DEFAULT_MODEL = BIN_DIR / "models" / "Qwen3VL-2B-Instruct-Q8_0.gguf"
 DEFAULT_MMPROJ = BIN_DIR / "models" / "mmproj-Qwen3VL-2B-Instruct-F16.gguf"
 
@@ -334,9 +355,9 @@ def _is_context_or_memory_error(text: str) -> bool:
 class LlamaPaths:
     def __init__(self, model_path: str | None) -> None:
         self.llama_dir = Path(os.environ.get("BEATSYNC_QWEN_LLAMA_DIR", str(DEFAULT_LLAMA_DIR)))
-        self.server_exe = self.llama_dir / "llama-server.exe"
-        self.mtmd_exe = self.llama_dir / "llama-mtmd-cli.exe"
-        self.list_exe = self.llama_dir / "llama-cli.exe"
+        self.server_exe = _llama_bin(self.llama_dir, "llama-server")
+        self.mtmd_exe = _llama_bin(self.llama_dir, "llama-mtmd-cli")
+        self.list_exe = _llama_bin(self.llama_dir, "llama-cli")
         self.model = self._resolve_model(model_path)
         self.mmproj = self._resolve_mmproj()
 

@@ -37,7 +37,28 @@ ANALYSIS_VERSION = "auto_av_analysis_v8_llama_vulkan_batched"
 DEFAULT_QWEN_MODEL_DIR = os.path.join(ROOT_DIR, "bin", "models")
 DEFAULT_QWEN_GGUF_MODEL = os.path.join(DEFAULT_QWEN_MODEL_DIR, "Qwen3VL-2B-Instruct-Q8_0.gguf")
 DEFAULT_QWEN_MMPROJ_MODEL = os.path.join(DEFAULT_QWEN_MODEL_DIR, "mmproj-Qwen3VL-2B-Instruct-F16.gguf")
-DEFAULT_LLAMA_CPP_DIR = os.path.join(ROOT_DIR, "bin", "llama-bin-win-vulkan-x64")
+
+
+def _default_llama_dir() -> str:
+    """Locate the bundled llama.cpp backend for the current platform."""
+    candidates = (
+        ["llama-bin-win-vulkan-x64", "llama-bin-linux"]
+        if os.name == "nt"
+        else ["llama-bin-linux", "llama-bin-win-vulkan-x64"]
+    )
+    for name in candidates:
+        path = os.path.join(ROOT_DIR, "bin", name)
+        if os.path.exists(path):
+            return path
+    return os.path.join(ROOT_DIR, "bin", candidates[0])
+
+
+def _llama_bin(llama_dir: str, stem: str) -> str:
+    """Resolve a llama.cpp executable name for the current platform."""
+    return os.path.join(llama_dir, stem + (".exe" if os.name == "nt" else ""))
+
+
+DEFAULT_LLAMA_CPP_DIR = _default_llama_dir()
 VIDEO_ANALYSIS_CACHE_DIR = os.path.join(ROOT_DIR, "input", "video_analysis_cache")
 _LLAMA_VERSION_TOKENS: Dict[str, str] = {}
 
@@ -91,8 +112,8 @@ def _resolve_qwen_backend_paths(qwen_model_path: str | None) -> Dict[str, str]:
 
     return {
         "llama_dir": os.path.abspath(llama_dir),
-        "server": os.path.abspath(os.path.join(llama_dir, "llama-server.exe")),
-        "mtmd": os.path.abspath(os.path.join(llama_dir, "llama-mtmd-cli.exe")),
+        "server": os.path.abspath(_llama_bin(llama_dir, "llama-server")),
+        "mtmd": os.path.abspath(_llama_bin(llama_dir, "llama-mtmd-cli")),
         "model": os.path.abspath(model_path),
         "mmproj": os.path.abspath(mmproj_path),
     }
@@ -121,7 +142,7 @@ def _llama_version_token(llama_dir: str) -> str:
     if cached:
         return cached
 
-    mtmd = os.path.join(llama_dir, "llama-mtmd-cli.exe")
+    mtmd = _llama_bin(llama_dir, "llama-mtmd-cli")
     token = _path_signature_token(mtmd)
     if os.path.exists(mtmd):
         env = os.environ.copy()
