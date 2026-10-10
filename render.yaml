@@ -23,6 +23,14 @@ services:
         value: utf-8
       - key: PYTHONUTF8
         value: "1"
+      # Cap parallel ffmpeg clip workers to stay under the 512 MB free-plan
+      # RAM ceiling. Raise it (or remove) on a plan with more memory.
+      - key: BEATSYNC_MAX_PARALLEL_WORKERS
+        value: "2"
+      # Render jobs and analysis caches are written under the persistent
+      # output disk so an interrupted render can be resumed after a restart.
+      - key: BEATSYNC_STATE_DIR
+        value: /app/output/.state
       # PORT is injected automatically by Render — do not set it here.
       # Gradio binds to 0.0.0.0 via GRADIO_SERVER_NAME (set in Dockerfile).
     disk:

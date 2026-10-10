@@ -352,6 +352,19 @@ INFO_EFFECTS_ENABLED = "Master toggle for all effect controls below"
 LABEL_SMART_SYNC = "🧠 Smart Sync (AI Energy Matching)"
 INFO_SMART_SYNC = "Shuffles clips to match beat energy, picks transitions per cut, and scales effects dynamically"
 
+LABEL_QWEN_SEMANTICS = "🔮 Qwen Semantic Detection"
+INFO_QWEN_SEMANTICS = (
+    "Uses the bundled Qwen vision model to tag each clip (action / beauty / emotion) and route "
+    "clips to matching audio sections for smarter sync. Disable to skip the model and speed up "
+    "analysis — the legacy planner will be used instead."
+)
+
+LABEL_RESUME_SECTION = "♻️ Resume Last Render"
+INFO_RESUME_SECTION = (
+    "After a refresh, crash, or host restart (e.g. a memory-limit kill), reconnect to your last "
+    "render here. Completed clips and beat analysis are reused, so only the remaining work runs."
+)
+
 LABEL_LYRICS = "🎤 Lyrics Overlay"
 INFO_LYRICS = "Paste song lyrics (any language). Auto-transliterates to English and syncs to beats"
 LABEL_LYRICS_TEXT = "Song Lyrics (plain text or LRC with timestamps)"

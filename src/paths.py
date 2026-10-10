@@ -13,6 +13,11 @@ PROCESSING_DIR = os.path.join(INPUT_DIR, 'processing')
 GRADIO_TEMP_DIR = os.path.join(INPUT_DIR, 'gradio_uploads')
 OUTPUT_DIR = os.path.join(ROOT_DIR, 'output')
 
+# Durable application state (render jobs, analysis caches). Prefers the
+# output volume so it survives restarts on hosts that mount a persistent
+# disk at the output path (e.g. Render.com). Override with BEATSYNC_STATE_DIR.
+STATE_DIR = os.environ.get('BEATSYNC_STATE_DIR') or os.path.join(OUTPUT_DIR, '.state')
+
 
 def ensure_project_dirs() -> None:
     """Create the standard project directories if they are missing."""
@@ -23,6 +28,7 @@ def ensure_project_dirs() -> None:
         PROCESSING_DIR,
         GRADIO_TEMP_DIR,
         OUTPUT_DIR,
+        STATE_DIR,
     ]:
         os.makedirs(directory, exist_ok=True)
 
@@ -55,6 +61,11 @@ def get_gradio_temp_dir() -> str:
 def get_output_dir() -> str:
     """Get the final output directory path."""
     return OUTPUT_DIR
+
+
+def get_state_dir() -> str:
+    """Get the durable state directory path (render jobs, caches)."""
+    return STATE_DIR
 
 
 ensure_project_dirs()

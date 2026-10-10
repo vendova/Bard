@@ -55,6 +55,11 @@ from video_effects import (
 )
 from auto_mode.stage6_av_planner import build_planned_clip_sequence, summarize_clip_plan
 from auto_mode.stage6_av_planner import _build_segment_profiles as build_segment_profiles
+
+try:
+    import render_jobs as _jobs
+except Exception:
+    _jobs = None
 from smart_sync import build_smart_sync_plan, compute_segment_energy, smart_transition_duration
 
 # Import mode modules
@@ -379,6 +384,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                       smart_sync: bool = False,
                       variation_seed: int = None,
                       transition_preset_name: str = "",
+                      job_id: str | None = None,
                       ) -> str:
     """
     Creates a music video with video clips cut to detected beats.
@@ -640,7 +646,9 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         segment_files = []
         segments_dir = os.path.join(session_temp_dir, 'segments')
         os.makedirs(segments_dir, exist_ok=True)
-        
+        _resumed_lossless = 0
+        _rendered_lossless = 0
+
         for i, exact_duration in enumerate(segment_durations):
             # Duration comes from the absolute frame-locked timeline.
             frame_count = int(segment_frames[i])
@@ -655,16 +663,38 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                 prores_file = random.choice(prores_files)
                 segment_start = None
 
+            # Resume: reuse a previously completed segment if one matches.
+            if job_id and _jobs is not None:
+                _sig = _jobs.clip_signature(
+                    i, prores_file, exact_duration, prores_fps, None,
+                    False, 'none', True, variation_seed,
+                )
+                _cached = _jobs.get_segment(job_id, i, _sig)
+                if _cached:
+                    segment_files.append(_cached)
+                    _resumed_lossless += 1
+                    continue
+
             # Extract segment
             segment_file = extract_prores_segment_random(
                 prores_file, exact_duration, prores_fps, segments_dir, i,
                 start_time=segment_start
             )
+            _rendered_lossless += 1
+            # Persist for future resume.
+            if job_id and _jobs is not None:
+                _sig = _jobs.clip_signature(
+                    i, prores_file, exact_duration, prores_fps, None,
+                    False, 'none', True, variation_seed,
+                )
+                segment_file = _jobs.store_segment(job_id, i, _sig, segment_file)
             segment_files.append(segment_file)
 
             if (i + 1) % 10 == 0:
                 print(f"   ✓ Extracted {i + 1}/{total_clips} segments (frame-perfect)")
-        
+
+        if _resumed_lossless:
+            print(f"   ♻️  Resumed {_resumed_lossless}/{total_clips} cached segments (rendered {_rendered_lossless})")
         print(f"✓ Extracted all {len(segment_files)} segments (frame-perfect, video only)")
         
         # Concatenate and add audio
@@ -700,8 +730,13 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         
         for segment_file in segment_files:
             try:
-                if os.path.exists(segment_file):
-                    os.remove(segment_file)
+                if not segment_file or not os.path.exists(segment_file):
+                    continue
+                if job_id and _jobs is not None:
+                    _seg_root = os.path.abspath(_jobs._segments_folder(job_id))
+                    if os.path.abspath(segment_file).startswith(_seg_root):
+                        continue
+                os.remove(segment_file)
             except Exception:
                 pass
         
@@ -743,16 +778,38 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         print(f"{'='*60}\n")
         
         clip_args = []
+        _sig_for_idx: Dict[int, str] = {}
+        _resumed_indices: set[int] = set()
+        _effects_key = _jobs.effects_config_key(effects_config) if (_jobs is not None) else "none"
         for i, final_duration in enumerate(segment_durations):
             # Duration comes from the absolute frame-locked cut timeline.
             planned_clip = planned_clip_sequence[i] if planned_clip_sequence else None
             video_file = planned_clip.get('video_file') if planned_clip else random.choice(video_files)
             overrides = smart_effect_overrides[i] if smart_effect_overrides and i < len(smart_effect_overrides) else None
+
+            # Resume: reuse a previously completed clip if one matches.
+            if job_id and _jobs is not None:
+                _sig = _jobs.clip_signature(
+                    i, video_file, final_duration, fps, target_size,
+                    use_nvenc, gpu_encoder, False, variation_seed, _effects_key,
+                )
+                _sig_for_idx[i] = _sig
+                _cached = _jobs.get_segment(job_id, i, _sig)
+                if _cached:
+                    _resumed_indices.add(i)
+                    continue
             clip_args.append((i, video_file, final_duration,
                             target_size, use_nvenc, gpu_encoder, session_temp_dir, fps,
                             planned_clip, effects_config, overrides))
+
+        if _resumed_indices:
+            print(f"   ♻️  Resumed {len(_resumed_indices)}/{total_clips} cached clips; rendering the rest")
         
-        clip_files = [None] * len(clip_args)
+        clip_files: List[str | None] = [None] * total_clips
+        # Populate pre-resumed clips into their slots.
+        for i in _resumed_indices:
+            clip_files[i] = _jobs.get_segment(job_id, i, _sig_for_idx[i])
+
         clip_timings: List[float] = []
         clip_stage_started = time.perf_counter()
         
@@ -763,7 +820,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                 for idx, args in enumerate(clip_args)
             }
             
-            completed = 0
+            completed = len(_resumed_indices)
             for future in as_completed(future_to_idx):
                 idx = future_to_idx[future]
                 try:
@@ -782,15 +839,18 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                         continue
                     
                     if clip_path is not None:
-                        clip_files[idx] = clip_path
+                        # Persist for future resume.
+                        if job_id and _jobs is not None and i in _sig_for_idx:
+                            clip_path = _jobs.store_segment(job_id, i, _sig_for_idx[i], clip_path)
+                        clip_files[i] = clip_path
                         
                         completed += 1
-                        if completed % 10 == 0 or completed == len(clip_args):
-                            progress = (completed / len(clip_args)) * 100
+                        if completed % 10 == 0 or completed == total_clips:
+                            progress = (completed / total_clips) * 100
                             elapsed = time.perf_counter() - clip_stage_started
                             rate = completed / max(0.001, elapsed)
                             print(
-                                f"   ⚡ Progress: {completed}/{len(clip_args)} clips ({progress:.1f}%) "
+                                f"   ⚡ Progress: {completed}/{total_clips} clips ({progress:.1f}%) "
                                 f"[{_fmt_seconds(elapsed)}, {rate:.2f} clips/s]"
                             )
                     
@@ -869,11 +929,18 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
  
         print(f"\n🧹 Cleaning up resources...")
         
-        # Cleanup clip files
+        # Cleanup clip files — but never delete job-resume segments: those live
+        # in the job folder and must survive for a future resume.
+        _job_dir = None
+        if _jobs is not None and job_id:
+            _job_dir = os.path.abspath(_jobs._segments_folder(job_id))
         for clip_file in clip_files:
             try:
-                if os.path.exists(clip_file):
-                    os.remove(clip_file)
+                if not clip_file or not os.path.exists(clip_file):
+                    continue
+                if _job_dir and os.path.abspath(clip_file).startswith(_job_dir):
+                    continue
+                os.remove(clip_file)
             except Exception as e:
                 print(f"⚠️  Warning: Could not delete clip file: {e}")
         

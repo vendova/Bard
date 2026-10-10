@@ -121,6 +121,34 @@ from auto_mode import analyze_beats_auto
 # Import UI content
 from ui_content import *
 
+# ── Qwen backend availability probe ────────────────────────────────────
+# Used to smartly enable/disable the semantic-detection toggle in the UI.
+try:
+    from video_analysis import _qwen_backend_available, DEFAULT_QWEN_MODEL_DIR
+    QWEN_BACKEND_AVAILABLE = bool(_qwen_backend_available(DEFAULT_QWEN_MODEL_DIR))
+except Exception:
+    QWEN_BACKEND_AVAILABLE = False
+if os.environ.get("BEATSYNC_DISABLE_QWEN", "0") == "1":
+    QWEN_BACKEND_AVAILABLE = False
+
+# Persistent render-job manager (resume after restart / memory-limit crash).
+try:
+    import render_jobs as _jobs
+except Exception:
+    _jobs = None
+
+# Optional hard cap on parallel clip workers — lowers memory on hosts like
+# Render.com that enforce a RAM ceiling. Set BEATSYNC_MAX_PARALLEL_WORKERS.
+try:
+    _env_workers = os.environ.get("BEATSYNC_MAX_PARALLEL_WORKERS", "").strip()
+    if _env_workers:
+        _capped = max(1, int(_env_workers))
+        if _capped < PARALLEL_WORKERS:
+            PARALLEL_WORKERS = _capped
+            print(f"⚠️ BEATSYNC_MAX_PARALLEL_WORKERS={_capped} → parallel workers capped to {_capped}")
+except Exception:
+    pass
+
 # Set environment variable for Gradio
 os.environ['GRADIO_TEMP_DIR'] = GRADIO_TEMP_DIR
 
@@ -164,8 +192,139 @@ _AUTO_DOWNLOAD_JS = """
 """
 
 
+# Persist lightweight settings to localStorage so an accidental refresh does
+# not lose the user's configuration. Gradio resets component values on reload,
+# so we snapshot labelled inputs and restore them once the app is ready.
+_SETTINGS_PERSISTENCE_JS = """
+() => {
+  const KEY = 'beatsync_settings_v1';
+  const RESTORE_KEY = 'beatsync_pending_restore';
+  const pick = () => {
+    const out = {};
+    document.querySelectorAll('fieldset, .gradio-container label').forEach((fs) => {
+      const labelEl = fs.querySelector('span[data-testid="block-info"], .label-wrap span, label > span');
+      const input = fs.querySelector('input, textarea, select');
+      if (!input || !labelEl) return;
+      const name = (labelEl.textContent || '').trim();
+      if (!name) return;
+      try {
+        if (input.type === 'checkbox') out[name] = { v: input.checked, t: 'c' };
+        else if (input.type === 'radio') { if (input.checked) out[name] = { v: input.value, t: 'r' }; }
+        else out[name] = { v: input.value, t: input.tagName.toLowerCase() };
+      } catch (e) {}
+    });
+    return out;
+  };
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(pick())); } catch (e) {} };
+  const apply = (data) => {
+    document.querySelectorAll('fieldset, .gradio-container label').forEach((fs) => {
+      const labelEl = fs.querySelector('span[data-testid="block-info"], .label-wrap span, label > span');
+      const input = fs.querySelector('input, textarea, select');
+      if (!input || !labelEl) return;
+      const name = (labelEl.textContent || '').trim();
+      const entry = data[name];
+      if (!entry) return;
+      try {
+        if (entry.t === 'c') { if (input.checked !== entry.v) input.click(); }
+        else if (entry.t === 'r') { if (input.value === entry.v && !input.checked) input.click(); }
+        else {
+          const proto = input.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+          setter.call(input, entry.v);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      } catch (e) {}
+    });
+  };
+  // Restore once per page load, after Gradio finishes the first render.
+  if (!window.__beatsyncRestoreDone) {
+    window.__beatsyncRestoreDone = true;
+    const raw = localStorage.getItem(KEY);
+    if (raw) {
+      let tries = 0;
+      const attempt = () => {
+        try { apply(JSON.parse(raw)); } catch (e) {}
+        if (++tries < 8) setTimeout(attempt, 400);
+      };
+      setTimeout(attempt, 600);
+    }
+  }
+  if (!window.__beatsyncSaveHooked) {
+    window.__beatsyncSaveHooked = true;
+    document.addEventListener('change', save, true);
+    document.addEventListener('input', (e) => { if (e.target && e.target.tagName !== 'TEXTAREA') save(); }, true);
+    window.addEventListener('beforeunload', save);
+  }
+}
+"""
+
+
+
 def _stage_status(stage_number: int) -> str:
     return f"Stage {stage_number} is processing. Please wait."
+
+
+# ── Resume-after-restart helpers ──────────────────────────────────────
+
+def _resume_status_markdown() -> str:
+    """Describe the most recent resumable job for the Resume panel."""
+    if _jobs is None:
+        return "_Job persistence unavailable._"
+    rec = _jobs.latest_resumable_job()
+    if not rec:
+        return "_No interrupted render to resume yet._"
+    job_id = rec.get("job_id", "")
+    label = _jobs.job_stage_label(job_id)
+    created = rec.get("created")
+    when = ""
+    if created:
+        when = datetime.datetime.fromtimestamp(created).strftime("%Y-%m-%d %H:%M:%S")
+    return f"**Job `{job_id}`** — {label}\n\n_Started {when}_"
+
+
+def _load_resume_panel():
+    """Backend load: reveal the Resume panel when an unfinished job exists."""
+    if _jobs is None:
+        return gr.update(visible=False), _resume_status_markdown()
+    rec = _jobs.latest_resumable_job()
+    return gr.update(visible=bool(rec)), _resume_status_markdown()
+
+
+def _resume_last_job():
+    """Click handler: reconnect to the most recent interrupted job.
+
+    Yields the same StatusResult shape as process_video so the existing
+    outputs (video, status box, session, download button) are reused.
+    """
+    if _jobs is None:
+        yield None, "❌ Job persistence unavailable.", {}, gr.update(visible=False)
+        return
+    rec = _jobs.latest_resumable_job()
+    if not rec:
+        yield None, "ℹ️ Nothing to resume — no interrupted render found.", {}, gr.update(visible=False)
+        return
+    job_id = rec["job_id"]
+    # If the job actually finished before the restart, just hand back the video.
+    done = _jobs.get_output(job_id)
+    if done:
+        yield done, f"✅ Job {job_id} already completed — video ready.", {}, gr.update(visible=True, value=done)
+        return
+    rec = _jobs.load_record(job_id) or {}
+    inp = rec.get("inputs") or {}
+    yield from process_video(
+        audio_file=inp.get("audio_file", ""),
+        video_files=inp.get("video_files", []),
+        output_filename=(rec.get("settings") or {}).get("output_filename", "music_video.mp4"),
+        processing_mode=(rec.get("settings") or {}).get("processing_mode", "cpu"),
+        custom_fps=None,
+        session_state={"_resume_seed": rec.get("seed")},
+        zip_file=inp.get("zip_file") or None,
+        smart_sync=bool((rec.get("settings") or {}).get("smart_sync", False)),
+        qwen_semantics=bool((rec.get("settings") or {}).get("qwen_semantics", True)),
+        resume_job_id=job_id,
+    )
+
 
 
 class LiveLogCapture:
@@ -491,7 +650,9 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        progress_callback: Callable[[str], None] | None = None,
                        console_logger: StageConsoleLogger | None = None,
                        regenerate: bool = False,
-                       zip_file: str | None = None) -> StatusResult:
+                       zip_file: str | None = None,
+                       qwen_semantics: bool = True,
+                       job_id: str | None = None) -> StatusResult:
     total_started = time.perf_counter()
     try:
         parallel_workers = PARALLEL_WORKERS
@@ -572,7 +733,11 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
         # so the user can tweak presets/effects/lyrics without waiting for
         # the expensive audio+video analysis to re-run.
         cached_beat_info = session_state.get('cached_beat_info')
-        if regenerate and cached_beat_info:
+        # Invalidate the cache if the Qwen semantic setting changed since the
+        # last analysis — the tag set must match the user's choice.
+        _qwen_changed = session_state.get('cached_qwen_enabled') != qwen_semantics
+        _skip_analysis = False
+        if regenerate and cached_beat_info and not _qwen_changed:
             selected_beats = session_state['cached_selected_beats']
             beat_info = cached_beat_info
             beat_times = beat_info.get('times', selected_beats)
@@ -580,22 +745,55 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                 console_logger.line("🔄 Regenerating — reusing cached beat analysis")
             if progress_callback:
                 progress_callback(_stage_status(6))
-        else:
-            selected_beats, beat_info = analyze_beats_auto(
-                local_audio_path,
-                use_gpu=use_gpu,
-                video_files=local_video_paths,
-                progress_callback=progress_callback,
-                console_callback=lambda stage, message: console_logger.stage_line(stage, message) if console_logger else None,
-            )
-            beat_times = beat_info.get('times', selected_beats)
-            # Cache for future regeneration
-            session_state['cached_beat_info'] = beat_info
-            session_state['cached_selected_beats'] = selected_beats
-            _stage5_summary(console_logger, beat_info.get("video_analysis"))
+            _skip_analysis = True
+        if not _skip_analysis:
+            # Disk-level beat-analysis cache so an interrupted render can skip
+            # stages 1-5 after an app restart (memory-limit crash on Render.com).
+            _beat_key = None
+            _disk_hit = False
+            if _jobs is not None:
+                _beat_key = _jobs.beat_cache_key(local_audio_path, local_video_paths, qwen_semantics)
+                _hit = _jobs.load_beat_cache(_beat_key)
+                if _hit is not None:
+                    selected_beats, beat_info = _hit
+                    beat_times = beat_info.get('times', selected_beats)
+                    if console_logger:
+                        console_logger.line("♻️  Beat analysis loaded from disk cache (stages 1-5 skipped)")
+                    session_state['cached_beat_info'] = beat_info
+                    session_state['cached_selected_beats'] = selected_beats
+                    session_state['cached_qwen_enabled'] = qwen_semantics
+                    if progress_callback:
+                        progress_callback(_stage_status(6))
+                    _stage5_summary(console_logger, beat_info.get("video_analysis"))
+                    if job_id and _jobs is not None:
+                        _jobs.save_job_beat_cache(job_id, selected_beats, beat_info)
+                    _disk_hit = True
 
-            if progress_callback:
-                progress_callback(_stage_status(6))
+            if not _disk_hit:
+                if console_logger and not qwen_semantics:
+                    console_logger.line("🧠 Qwen semantic detection disabled — using legacy planner")
+                selected_beats, beat_info = analyze_beats_auto(
+                    local_audio_path,
+                    use_gpu=use_gpu,
+                    video_files=local_video_paths,
+                    enable_qwen_semantics=qwen_semantics,
+                    progress_callback=progress_callback,
+                    console_callback=lambda stage, message: console_logger.stage_line(stage, message) if console_logger else None,
+                )
+                beat_times = beat_info.get('times', selected_beats)
+                # Cache for future regeneration
+                session_state['cached_beat_info'] = beat_info
+                session_state['cached_selected_beats'] = selected_beats
+                session_state['cached_qwen_enabled'] = qwen_semantics
+                _stage5_summary(console_logger, beat_info.get("video_analysis"))
+                # Persist to disk so a restart can resume.
+                if _beat_key and _jobs is not None:
+                    _jobs.save_beat_cache(_beat_key, selected_beats, beat_info)
+                if job_id and _jobs is not None:
+                    _jobs.save_job_beat_cache(job_id, selected_beats, beat_info)
+
+                if progress_callback:
+                    progress_callback(_stage_status(6))
 
         # Create video
         result_path = create_music_video(
@@ -606,6 +804,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             effects_config=effects_config,
             smart_sync=smart_sync,
             transition_preset_name=transition_preset_name,
+            job_id=job_id,
         )
 
         # ── Lyrics overlay ─────────────────────────────────────────────
@@ -793,14 +992,20 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
         # so the UI never serves a broken video.
         if not preview_path or not os.path.exists(preview_path) or os.path.getsize(preview_path) < 1000:
             console_logger.line("⚠️  Final output missing or too small; render may have failed.")
+            if job_id and _jobs is not None:
+                _jobs.mark_failed(job_id, "no valid output")
             return None, "❌ Error: Render produced no valid output. Check console for details.", session_state, gr.update(visible=False)
 
+        if job_id and _jobs is not None:
+            _jobs.set_output(job_id, preview_path)
         return preview_path, status_msg, session_state, gr.update(visible=True, value=preview_path)
 
     except Exception as e:
         error_msg = f"❌ Error: {str(e)}"
         import traceback
         traceback.print_exc()
+        if job_id and _jobs is not None:
+            _jobs.mark_failed(job_id, str(e))
         return None, error_msg, session_state, gr.update(visible=False)
 
 
@@ -832,16 +1037,59 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  lyrics_text: str = "",
                  font_combo_name: str = "",
                  transition_preset_name: str = "",
+                 qwen_semantics: bool = True,
                  regenerate: bool = False,
+                 resume_job_id: str | None = None,
                  ) -> Iterator[StatusResult]:
     status_queue: queue.Queue[str | None] = queue.Queue()
     result_queue: queue.Queue[StatusResult] = queue.Queue(maxsize=1)
     log_lines: list[str] = []
     render_started = time.perf_counter()
 
+    # ── Persistent render job ───────────────────────────────────────
+    # A job records inputs/settings on disk so a render can resume after an
+    # app restart (e.g. a Render.com container that exceeded its memory limit).
+    job_id = None
+    if _jobs is not None:
+        if resume_job_id and _jobs.load_record(resume_job_id):
+            # Resuming an interrupted job — reuse its persisted inputs + seed.
+            job_id = resume_job_id
+            rec = _jobs.load_record(job_id) or {}
+            if rec.get("inputs"):
+                audio_file = rec["inputs"].get("audio_file") or audio_file
+                video_files = rec["inputs"].get("video_files") or video_files
+                zip_file = rec["inputs"].get("zip_file") or zip_file
+            if rec.get("seed"):
+                session_state["_resume_seed"] = rec["seed"]
+            _jobs.update_job(job_id, status=_jobs.STATUS_RUNNING, stage="resuming")
+            log_lines.append(f"♻️  Resuming job {job_id} after restart")
+        elif not regenerate:
+            # Fresh render — copy uploads into a durable job folder.
+            import random as _seed_rng
+            seed = int(_seed_rng.random() * (2 ** 31))
+            session_state["_resume_seed"] = seed
+            job_id = _jobs.create_job({
+                "seed": seed,
+                "output_filename": output_filename,
+                "processing_mode": processing_mode,
+                "qwen_semantics": bool(qwen_semantics and QWEN_BACKEND_AVAILABLE),
+                "smart_sync": smart_sync,
+            })
+            try:
+                persisted = _jobs.persist_inputs(job_id, audio_file, video_files or [], zip_file)
+                _jobs.update_job(job_id, inputs=persisted)
+            except Exception:
+                pass
+            _jobs.trim_old_jobs()
+
     def push_line(line: str) -> None:
         log_lines.append(line)
         status_queue.put(line)
+        if job_id and _jobs is not None:
+            _jobs.append_log(job_id, line)
+            m = re.search(r"Progress: (\d+)/(\d+) clips", line)
+            if m:
+                _jobs.update_job(job_id, stage=f"rendering clips {m.group(1)}/{m.group(2)}")
 
     log_capture = LiveLogCapture(sys.__stdout__, push_line)
     console_logger = StageConsoleLogger(log_capture)
@@ -859,6 +1107,8 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
 
     def progress_callback(message: str) -> None:
         status_queue.put(message)
+        if job_id and _jobs is not None:
+            _jobs.update_job(job_id, stage=message[:120])
         match = re.search(r"Stage (\d+) is processing", message)
         if match:
             console_logger.start_stage(int(match.group(1)))
@@ -904,6 +1154,8 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                     console_logger=console_logger,
                     regenerate=regenerate,
                     zip_file=zip_file,
+                    qwen_semantics=bool(qwen_semantics and QWEN_BACKEND_AVAILABLE),
+                    job_id=job_id,
                 )
         except Exception as e:
             console_logger.line(f"Error: {e}")
@@ -922,6 +1174,8 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
     def render_feed() -> str:
         elapsed = time.perf_counter() - render_started
         header = f"⏱️ {elapsed:0.1f}s elapsed  |  {len(log_lines)} log lines"
+        if job_id:
+            header += f"  |  job {job_id}"
         tail = log_lines[-max_log_lines:]
         return header + "\n" + "\n".join(tail)
 
@@ -934,6 +1188,12 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
         yield None, render_feed(), session_state, gr.update(visible=False)
 
     thread.join()
+    # If the worker thread dies without producing a result (e.g. OOM kill of
+    # the subprocess), mark the job interrupted so it can be resumed later.
+    if job_id and _jobs is not None:
+        rec = _jobs.load_record(job_id)
+        if rec and rec.get("status") == _jobs.STATUS_RUNNING:
+            _jobs.mark_interrupted(job_id)
     yield result_queue.get()
 
 
@@ -965,6 +1225,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
                       lyrics_text: str = "",
                       font_combo_name: str = "",
                       transition_preset_name: str = "",
+                      qwen_semantics: bool = True,
                       ) -> Iterator[StatusResult]:
     """Re-render with updated settings, reusing cached beat analysis.
 
@@ -983,7 +1244,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
             color_boost_amount, glitch_strength,
             slow_motion_probability,
             smart_sync, lyrics_text, font_combo_name,
-            transition_preset_name,
+            transition_preset_name, qwen_semantics,
         )
         return
 
@@ -999,7 +1260,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
         color_boost_amount, glitch_strength,
         slow_motion_probability,
         smart_sync, lyrics_text, font_combo_name,
-        transition_preset_name,
+        transition_preset_name, qwen_semantics,
         regenerate=True,
     )
 
@@ -1010,7 +1271,7 @@ def cleanup_on_startup():
     and the persistent video analysis cache.
     """
     input_base = get_input_dir()
-    protected_dirs = {'audio', 'video', 'video_analysis_cache'}
+    protected_dirs = {'audio', 'video', 'video_analysis_cache', 'render_jobs', 'beat_analysis_cache'}
 
     try:
         os.makedirs(get_audio_input_dir(), exist_ok=True)
@@ -1083,6 +1344,14 @@ def create_ui() -> gr.Blocks:
                 with gr.Accordion('✨ Visual Effects & Transitions', open=False):
                     effects_enabled = gr.Checkbox(value=False, label=LABEL_EFFECTS_ENABLED, info=INFO_EFFECTS_ENABLED)
                     smart_sync_enabled = gr.Checkbox(value=False, label=LABEL_SMART_SYNC, info=INFO_SMART_SYNC)
+                    qwen_semantics_enabled = gr.Checkbox(
+                        value=QWEN_BACKEND_AVAILABLE,
+                        interactive=QWEN_BACKEND_AVAILABLE,
+                        label=(LABEL_QWEN_SEMANTICS if QWEN_BACKEND_AVAILABLE
+                               else LABEL_QWEN_SEMANTICS + ' — unavailable (model not found)'),
+                        info=INFO_QWEN_SEMANTICS,
+                        elem_id='qwen-semantics-toggle',
+                    )
                     with gr.Row():
                         gradient_overlay = gr.Checkbox(value=False, label=LABEL_GRADIENT_OVERLAY, info=INFO_GRADIENT_OVERLAY)
                         vignette = gr.Checkbox(value=False, label=LABEL_VIGNETTE, info=INFO_VIGNETTE)
@@ -1146,6 +1415,11 @@ def create_ui() -> gr.Blocks:
 
             with gr.Column(scale=1):
                 gr.Markdown('### 📺 Output')
+                with gr.Group(visible=False) as resume_group:
+                    gr.Markdown(f"### {LABEL_RESUME_SECTION}")
+                    gr.Markdown(INFO_RESUME_SECTION)
+                    resume_status = gr.Markdown('_No interrupted render to resume yet._')
+                    resume_btn = gr.Button('♻️ Resume Last Render', variant='secondary')
                 status_output = gr.Textbox(label='Live Processing Log', interactive=False, value=get_ready_status(python_status, cuda_status, MAX_THREADS, CPU_COUNT, ffmpeg_status, GPU_AVAILABLE, gpu_info, NVENC_AVAILABLE), lines=20, max_lines=20, elem_id='status-output-box', autoscroll=True)
                 video_output = gr.Video(label='Generated Music Video', format='mp4', interactive=False, elem_id='generated-video-output')
                 download_btn = gr.DownloadButton('⬇️ Download MP4', variant='secondary', visible=False, elem_id='download-video-btn')
@@ -1168,6 +1442,7 @@ def create_ui() -> gr.Blocks:
             lyrics_text,
             font_combo,
             transition_preset,
+            qwen_semantics_enabled,
         ]
         _shared_outputs = [video_output, status_output, session_state, download_btn]
 
@@ -1186,6 +1461,26 @@ def create_ui() -> gr.Blocks:
             inputs=_shared_inputs,
             outputs=_shared_outputs,
             show_progress='hidden'
+        ).then(
+            fn=None,
+            js=_AUTO_DOWNLOAD_JS,
+        )
+
+        # ── Resume / refresh-persistence wiring ─────────────────────────
+        # On page load: restore settings from localStorage and reveal the
+        # Resume panel when an interrupted job exists on disk.
+        app.load(
+            fn=_load_resume_panel,
+            inputs=None,
+            outputs=[resume_group, resume_status],
+            show_progress='hidden',
+        ).then(fn=None, js=_SETTINGS_PERSISTENCE_JS)
+
+        resume_btn.click(
+            fn=_resume_last_job,
+            inputs=None,
+            outputs=_shared_outputs,
+            show_progress='hidden',
         ).then(
             fn=None,
             js=_AUTO_DOWNLOAD_JS,
