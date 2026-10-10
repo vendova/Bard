@@ -47,6 +47,63 @@ NVENC_LOOKAHEAD = '32'
 NVENC_AQ_STRENGTH = '12'
 
 
+def _env_int(name: str, default: int, lo: int = 1, hi: int | None = None) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    value = max(lo, value)
+    if hi is not None:
+        return min(hi, value)
+    return value
+
+
+def playback_crf() -> str:
+    """CPU H.264 CRF for intermediate/render clips (visually near-lossless)."""
+    return os.environ.get('BEATSYNC_PLAYBACK_CRF', '20').strip() or '20'
+
+
+def playback_cq() -> str:
+    """NVENC CQ for intermediate/render clips."""
+    return os.environ.get('BEATSYNC_PLAYBACK_CQ', '23').strip() or '23'
+
+
+def cpu_encode_preset() -> str:
+    """libx264 preset for intermediate clips (speed/quality balance)."""
+    return os.environ.get('BEATSYNC_CPU_PRESET', 'veryfast').strip() or 'veryfast'
+
+
+def clip_max_width() -> int:
+    return _env_int('BEATSYNC_CLIP_MAX_WIDTH', 1920, lo=320)
+
+
+def clip_max_height() -> int:
+    return _env_int('BEATSYNC_CLIP_MAX_HEIGHT', 1080, lo=240)
+
+
+def clip_size_cap_mb() -> float:
+    """Per-clip size ceiling in MB; 0 disables the cap."""
+    try:
+        return float(os.environ.get('BEATSYNC_CLIP_MAX_MB', '200'))
+    except (TypeError, ValueError):
+        return 200.0
+
+
+def resolve_output_resolution(width: int, height: int) -> Tuple[int, int]:
+    """Downscale a source resolution to the render ceiling, keeping aspect.
+
+    Keeps intermediate clips small (beat-synced clips rarely need more than
+    full HD) while never upscaling. Dimensions are forced even for yuv420p.
+    """
+    if width <= 0 or height <= 0:
+        return (width, height)
+    max_w, max_h = clip_max_width(), clip_max_height()
+    scale = min(1.0, max_w / float(width), max_h / float(height))
+    new_w = max(2, int(round(width * scale))) & ~1
+    new_h = max(2, int(round(height * scale))) & ~1
+    return (new_w, new_h)
+
+
 def _run_media_command(cmd: List[str], timeout: int) -> subprocess.CompletedProcess[str]:
     """Run an FFmpeg/FFprobe command with consistent capture settings."""
     return subprocess.run(
@@ -141,17 +198,46 @@ def get_nvenc_quality_args(gpu_encoder: str, include_pix_fmt: bool = True) -> Li
     return args
 
 
-def get_cpu_h264_quality_args(include_pix_fmt: bool = True) -> List[str]:
-    """Return lossless CPU H.264 settings."""
+def get_clip_h264_quality_args(include_pix_fmt: bool = True) -> List[str]:
+    """Bounded-quality CPU H.264 settings for intermediate/render clips.
+
+    Uses a high CRF instead of lossless ``-crf 0`` so each beat clip stays a
+    few MB rather than tens of MB. This keeps disk usage and the final xfade
+    assembly (which decodes every clip) tractable without visible quality loss.
+    """
     args = [
         '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-crf', '0',
+        '-preset', cpu_encode_preset(),
+        '-crf', playback_crf(),
     ]
     if include_pix_fmt:
         args.extend(['-pix_fmt', 'yuv420p'])
     args.extend(['-threads', str(MAX_THREADS)])
     return args
+
+
+def get_nvenc_clip_quality_args(gpu_encoder: str, include_pix_fmt: bool = True) -> List[str]:
+    """Bounded-quality NVENC settings for intermediate/render clips."""
+    args = [
+        '-c:v', gpu_encoder,
+        '-preset', 'p5',
+        '-tune', 'hq' if gpu_encoder == 'h264_nvenc' else 'uhq',
+        '-rc', 'vbr',
+        '-b:v', '0',
+        '-cq', playback_cq(),
+    ]
+    if gpu_encoder == 'h264_nvenc':
+        args.extend(['-profile:v', 'high'])
+    elif gpu_encoder == 'hevc_nvenc':
+        args.extend(['-profile:v', 'main'])
+    if include_pix_fmt:
+        args.extend(['-pix_fmt', 'yuv420p'])
+    return args
+
+
+def get_cpu_h264_quality_args(include_pix_fmt: bool = True) -> List[str]:
+    """Return CPU H.264 settings for final renders (visually lossless-ish)."""
+    return get_clip_h264_quality_args(include_pix_fmt=include_pix_fmt)
 
 
 def get_video_duration(video_file: str) -> float:
@@ -371,9 +457,20 @@ def extract_clip_segment_ffmpeg(video_file: str, start_time: float, duration: fl
         
         # Video encoding
         if use_nvenc:
-            cmd.extend(get_nvenc_quality_args(gpu_encoder, include_pix_fmt=True))
+            cmd.extend(get_nvenc_clip_quality_args(gpu_encoder, include_pix_fmt=True))
         else:
-            cmd.extend(get_cpu_h264_quality_args(include_pix_fmt=True))
+            cmd.extend(get_clip_h264_quality_args(include_pix_fmt=True))
+
+        # Bounded-quality output: cap the bitrate so a long segment can never
+        # balloon past the per-clip size ceiling. VBR simply uses less when the
+        # content stays under the cap.
+        cap_mb = clip_size_cap_mb()
+        if cap_mb > 0 and exact_source_duration > 0:
+            max_kbps = int((cap_mb * 8 * 1024 * 1024 * 0.95) / exact_source_duration / 1000)
+            # Clamp into libx264's accepted range; short clips rarely approach
+            # the cap anyway, and the ceiling still bounds pathological cases.
+            max_kbps = max(500, min(max_kbps, 100_000))
+            cmd.extend(['-maxrate', f'{max_kbps}k', '-bufsize', f'{max_kbps * 2}k'])
         
         # No audio, frame-accurate settings
         cmd.extend([
@@ -395,6 +492,14 @@ def extract_clip_segment_ffmpeg(video_file: str, start_time: float, duration: fl
         # Verify output exists and has content
         if not os.path.exists(output_file) or os.path.getsize(output_file) == 0:
             return False
+        
+        if cap_mb > 0:
+            size_mb = os.path.getsize(output_file) / (1024 * 1024)
+            if size_mb > cap_mb:
+                print(
+                    f"   ⚠️  Clip {os.path.basename(output_file)} is {size_mb:.0f} MB "
+                    f"(> {cap_mb:.0f} MB cap); lower BEATSYNC_PLAYBACK_CRF or shorten segments."
+                )
         
         return True
         
@@ -648,9 +753,9 @@ def concatenate_videos_ffmpeg(video_files: List[str], output_file: str,
                 cmd.extend(['-map', '0:v', '-map', '1:a'])
             
             if use_nvenc:
-                cmd.extend(get_nvenc_quality_args(gpu_encoder, include_pix_fmt=True))
+                cmd.extend(get_nvenc_clip_quality_args(gpu_encoder, include_pix_fmt=True))
             else:
-                cmd.extend(get_cpu_h264_quality_args(include_pix_fmt=True))
+                cmd.extend(get_clip_h264_quality_args(include_pix_fmt=True))
             
             if audio_file:
                 cmd.extend([

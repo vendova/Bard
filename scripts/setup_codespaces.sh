@@ -67,4 +67,13 @@ and bin/models are present. On a low-RAM Codespace, cap Qwen memory first:
   export BEATSYNC_QWEN_LLAMA_CTX=4096
 
 The UI defaults to CPU H.264 (no NVENC GPU in Codespaces).
+
+Storage / size controls (intermediate clips are now bounded-quality rather
+than lossless, so renders stay small and assembly stays fast):
+  export BEATSYNC_PLAYBACK_CRF=20        # higher = smaller/faster clips (18-23 typical)
+  export BEATSYNC_CPU_PRESET=veryfast    # clip encode speed/quality
+  export BEATSYNC_CLIP_MAX_WIDTH=1920    # downscale source wider than this
+  export BEATSYNC_CLIP_MAX_HEIGHT=1080
+  export BEATSYNC_CLIP_MAX_MB=200        # per-clip size ceiling (0 = off)
+  export BEATSYNC_MAX_OUTPUT_MB=200      # final output cap (2x input by default)
 EOF

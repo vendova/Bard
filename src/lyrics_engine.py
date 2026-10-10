@@ -377,9 +377,9 @@ def burn_lyrics_into_video(
     ]
 
     if use_nvenc:
-        cmd.extend(fp.get_nvenc_quality_args(gpu_encoder, include_pix_fmt=True))
+        cmd.extend(fp.get_nvenc_clip_quality_args(gpu_encoder, include_pix_fmt=True))
     else:
-        cmd.extend(fp.get_cpu_h264_quality_args(include_pix_fmt=True))
+        cmd.extend(fp.get_clip_h264_quality_args(include_pix_fmt=True))
 
     # Copy audio stream as-is
     cmd.extend(['-c:a', 'copy', '-r', str(fps), '-fps_mode', 'cfr',

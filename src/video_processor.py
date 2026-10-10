@@ -39,6 +39,7 @@ from ffmpeg_processing import (
     get_video_duration,
     get_video_fps,
     get_video_resolution,
+    resolve_output_resolution,
     convert_to_prores_proxy,
     extract_clip_segment_ffmpeg,
     extract_prores_segment_random,
@@ -111,6 +112,19 @@ def _effective_clip_workers(requested_workers: int, use_nvenc: bool) -> int:
         lo=1,
         hi=requested_workers,
     )
+
+
+def _log_disk_headroom(label: str = "") -> None:
+    """Print free disk space so storage problems are visible before a render fails."""
+    try:
+        usage = shutil.disk_usage(get_processing_dir())
+        free_gb = usage.free / (1024 ** 3)
+        suffix = f" [{label}]" if label else ""
+        print(f"💾 Free disk space: {free_gb:.1f} GB{suffix}")
+        if free_gb < 2.0:
+            print("   ⚠️  Low disk space — reduce clip length/resolution or free space to avoid failures.")
+    except Exception:
+        pass
 
 
 def _summarize_clip_timings(timings: List[float], total_duration: float) -> None:
@@ -449,6 +463,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         print(f"   ⚠️  Warning: Could not clear processing directory: {e}")
         
     print(f"📁 Processing directory: {session_temp_dir}")
+    _log_disk_headroom("start")
 
     # Determine processing mode
     use_nvenc = use_gpu and NVENC_AVAILABLE and not lossless_mode and gpu_encoder != 'none'
@@ -761,10 +776,16 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
     
     # STANDARD MODE - Direct parallel processing (NO BATCHES)
     else:
-        # Get target resolution from first video
-        target_size = get_video_resolution(video_files[0])
+        # Get target resolution from first video, capped to the render ceiling
+        # so intermediate clips and the final assembly stay a manageable size.
+        source_size = get_video_resolution(video_files[0])
+        target_size = resolve_output_resolution(source_size[0], source_size[1])
         render_info["target_resolution"] = f"{target_size[0]}x{target_size[1]}"
-        print(f"🎞️ Target resolution: {target_size[0]}x{target_size[1]}")
+        if target_size != source_size:
+            print(f"🎞️ Target resolution: {target_size[0]}x{target_size[1]} "
+                  f"(downscaled from {source_size[0]}x{source_size[1]})")
+        else:
+            print(f"🎞️ Target resolution: {target_size[0]}x{target_size[1]}")
         
         print(f"\n{'='*60}")
         print(f"🎬 PROCESSING ALL CLIPS (No batch processing with FFmpeg)")
@@ -875,6 +896,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         print(f"\n{'='*60}")
         print(f"🎬 FINAL ASSEMBLY: Concatenating {len(clip_files)} clips")
         print(f"{'='*60}\n")
+        _log_disk_headroom("assembly")
         
         # Concatenate all clips and add audio.
         # When smart sync transitions are available, use per-cut xfade.

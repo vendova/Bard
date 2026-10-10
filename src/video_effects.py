@@ -393,9 +393,9 @@ def apply_transitions_ffmpeg(
 
     # Video encoding
     if use_nvenc:
-        cmd.extend(fp.get_nvenc_quality_args(gpu_encoder, include_pix_fmt=True))
+        cmd.extend(fp.get_nvenc_clip_quality_args(gpu_encoder, include_pix_fmt=True))
     else:
-        cmd.extend(fp.get_cpu_h264_quality_args(include_pix_fmt=True))
+        cmd.extend(fp.get_clip_h264_quality_args(include_pix_fmt=True))
 
     cmd.extend([
         '-r', str(fps),
@@ -518,9 +518,9 @@ def smart_transitions_ffmpeg(
         cmd.extend(['-an'])
 
     if use_nvenc:
-        cmd.extend(fp.get_nvenc_quality_args(gpu_encoder, include_pix_fmt=True))
+        cmd.extend(fp.get_nvenc_clip_quality_args(gpu_encoder, include_pix_fmt=True))
     else:
-        cmd.extend(fp.get_cpu_h264_quality_args(include_pix_fmt=True))
+        cmd.extend(fp.get_clip_h264_quality_args(include_pix_fmt=True))
 
     cmd.extend([
         '-r', str(fps),
