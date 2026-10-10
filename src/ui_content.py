@@ -323,6 +323,9 @@ def get_startup_header(cpu_count, max_threads, parallel_workers, python_status,
 LABEL_AUDIO_FILE = "🎵 Audio File (MP3/WAV/FLAC)"
 LABEL_VIDEO_FILES = "🎥 Video Files (MP4/MKV)"
 
+LABEL_ZIP_FILE = "🗜️ Clips ZIP (optional, MP4/MKV inside)"
+INFO_ZIP_FILE = "Upload a .zip containing clips. They are extracted and merged with the clips above."
+
 LABEL_CUSTOM_FPS = "🎞️ Custom FPS (Frame Rate)"
 INFO_CUSTOM_FPS = "Leave empty for auto-detect, or enter value (24/30/60)"
 

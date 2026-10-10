@@ -360,6 +360,78 @@ def _as_existing_source_paths(file_paths: VideoFilesInput) -> list[str]:
     return [path for path in (_as_existing_source_path(p) for p in file_paths) if path]
 
 
+_ZIP_VIDEO_EXTENSIONS = ('.mp4', '.mkv')
+
+
+def _is_zip_path_traversal(name: str) -> bool:
+    """True if a zip entry name escapes its extraction root (zip-slip)."""
+    norm = os.path.normpath(name)
+    if os.path.isabs(norm) or norm.startswith('..'):
+        return True
+    parts = norm.split(os.sep)
+    return any(part == '..' for part in parts)
+
+
+def _extract_zip_clips(zip_path: str, dest_dir: str) -> list[str]:
+    """Extract video clips from a zip archive into dest_dir.
+
+    Returns a sorted list of extracted clip paths. Only files matching the
+    supported video extensions are extracted; nested directory structures are
+    flattened into dest_dir. Zip-slip entries are rejected.
+    """
+    import zipfile
+
+    if not zip_path or not os.path.isfile(zip_path):
+        return []
+
+    os.makedirs(dest_dir, exist_ok=True)
+    extracted: list[str] = []
+
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as archive:
+            members = [
+                m for m in archive.infolist()
+                if not m.is_dir() and os.path.splitext(m.filename)[1].lower() in _ZIP_VIDEO_EXTENSIONS
+            ]
+            for member in members:
+                if _is_zip_path_traversal(member.filename):
+                    continue
+                # Flatten: keep only the basename to avoid collisions / deep trees.
+                base = os.path.basename(member.filename) or 'clip'
+                out_path = os.path.join(dest_dir, base)
+                # Avoid overwriting when multiple clips share a basename.
+                if os.path.exists(out_path):
+                    stem, ext = os.path.splitext(base)
+                    counter = 1
+                    while os.path.exists(out_path):
+                        out_path = os.path.join(dest_dir, f"{stem}_{counter}{ext}")
+                        counter += 1
+                with archive.open(member, 'r') as src, open(out_path, 'wb') as dst:
+                    dst.write(src.read())
+                extracted.append(out_path)
+    except (zipfile.BadZipFile, OSError) as exc:
+        print(f"   ⚠️  Could not extract zip {zip_path}: {exc}")
+        return []
+
+    extracted.sort(key=lambda p: os.path.basename(p).lower())
+    return extracted
+
+
+def _collect_video_clips(video_files: VideoFilesInput, zip_file: str | None,
+                         session_dir: str, console_logger: StageConsoleLogger | None) -> list[str]:
+    """Combine individually uploaded clips with clips extracted from a zip."""
+    clips = _as_existing_source_paths(video_files)
+    if zip_file:
+        zip_dest = os.path.join(session_dir, 'zip_clips')
+        extracted = _extract_zip_clips(zip_file, zip_dest)
+        if extracted and console_logger:
+            console_logger.line(f"🗜️  Extracted {len(extracted)} clips from zip")
+        elif console_logger:
+            console_logger.line("⚠️  No video clips (.mp4/.mkv) found inside the zip")
+        clips.extend(extracted)
+    return clips
+
+
 def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        output_filename: str, processing_mode: str,
                        custom_fps: float, session_state: dict,
@@ -370,7 +442,8 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        transition_preset_name: str = "",
                        progress_callback: Callable[[str], None] | None = None,
                        console_logger: StageConsoleLogger | None = None,
-                       regenerate: bool = False) -> StatusResult:
+                       regenerate: bool = False,
+                       zip_file: str | None = None) -> StatusResult:
     total_started = time.perf_counter()
     try:
         parallel_workers = PARALLEL_WORKERS
@@ -397,19 +470,20 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
         else:
             return None, '❌ Error: No audio file selected', session_state
 
-        # Handle videos by referencing selected file paths directly.
-        if video_files:
-            if video_files != session_state.get('original_video_paths'):
-                local_video_paths = _as_existing_source_paths(video_files)
-                if local_video_paths:
-                    session_state['local_video_paths'] = local_video_paths
-                    session_state['original_video_paths'] = video_files
-                else:
-                    return None, '❌ Error: Could not access video files', session_state
+        # Handle videos: combine individually uploaded clips with any clips
+        # extracted from an optional zip archive.
+        sources_key = (tuple(video_files or ()), zip_file)
+        if sources_key != session_state.get('original_video_paths'):
+            local_video_paths = _collect_video_clips(
+                video_files, zip_file, session_dir, console_logger
+            )
+            if local_video_paths:
+                session_state['local_video_paths'] = local_video_paths
+                session_state['original_video_paths'] = sources_key
             else:
-                local_video_paths = session_state.get('local_video_paths')
+                return None, '❌ Error: No video clips available. Upload clips or a zip of clips.', session_state
         else:
-            return None, '❌ Error: No video files selected', session_state
+            local_video_paths = session_state.get('local_video_paths')
 
         # Verify files exist
         if not local_audio_path or not os.path.exists(local_audio_path):
@@ -685,6 +759,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
 def process_video(audio_file: str, video_files: VideoFilesInput,
                  output_filename: str, processing_mode: str,
                  custom_fps: float, session_state: dict,
+                 zip_file: str | None = None,
                  effects_enabled: bool = False,
                  gradient_overlay: bool = False,
                  vignette: bool = False,
@@ -774,6 +849,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                     progress_callback=progress_callback,
                     console_logger=console_logger,
                     regenerate=regenerate,
+                    zip_file=zip_file,
                 )
         except Exception as e:
             console_logger.line(f"Error: {e}")
@@ -805,6 +881,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
 def regenerate_video(audio_file: str, video_files: VideoFilesInput,
                       output_filename: str, processing_mode: str,
                       custom_fps: float, session_state: dict,
+                      zip_file: str | None = None,
                       effects_enabled: bool = False,
                       gradient_overlay: bool = False,
                       vignette: bool = False,
@@ -837,7 +914,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
     if not session_state or 'cached_beat_info' not in session_state:
         yield from process_video(
             audio_file, video_files, output_filename, processing_mode,
-            custom_fps, session_state,
+            custom_fps, session_state, zip_file,
             effects_enabled, gradient_overlay, vignette, zoom_punch, shake,
             flash_on_beat, color_boost, glitch, mirror,
             slow_motion, slow_motion_factor,
@@ -853,7 +930,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
 
     yield from process_video(
         audio_file, video_files, output_filename, processing_mode,
-        custom_fps, session_state,
+        custom_fps, session_state, zip_file,
         effects_enabled, gradient_overlay, vignette, zoom_punch, shake,
         flash_on_beat, color_boost, glitch, mirror,
         slow_motion, slow_motion_factor,
@@ -927,6 +1004,7 @@ def create_ui() -> gr.Blocks:
                 gr.Markdown('### 📁 Input Files')
                 audio_input = gr.File(label=LABEL_AUDIO_FILE, file_types=['.mp3', '.wav', '.flac'], type='filepath', elem_id='audio-file-input')
                 video_input = gr.File(label=LABEL_VIDEO_FILES, file_count='multiple', file_types=['.mp4', '.mkv'], type='filepath', elem_id='video-files-input')
+                zip_input = gr.File(label=LABEL_ZIP_FILE, file_types=['.zip'], type='filepath', elem_id='zip-clips-input')
 
                 with gr.Group():
                     gr.Markdown('### ⚙️ Video Settings')
@@ -1017,6 +1095,7 @@ def create_ui() -> gr.Blocks:
             audio_input, video_input,
             output_filename, processing_mode, custom_fps,
             session_state,
+            zip_input,
             effects_enabled,
             gradient_overlay, vignette, zoom_punch, shake,
             flash_on_beat, color_boost, glitch, mirror,
