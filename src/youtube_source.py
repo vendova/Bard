@@ -167,10 +167,21 @@ def download_youtube(url: str, dest_dir: str,
             return os.path.join(dest_dir, name)
 
     tail = "\n".join((proc.stdout or "").strip().splitlines()[-3:])
-    if "Sign in to confirm" in (proc.stdout or "") or "not a bot" in (proc.stdout or ""):
+    blob = (proc.stdout or "")
+    blocked = (
+        "Sign in to confirm" in blob
+        or "not a bot" in blob
+        or "403 Forbidden" in blob
+        or "confirm you" in blob
+        or "This video is unavailable" in blob
+    )
+    if blocked:
         raise RuntimeError(
-            "YouTube blocked this IP with a bot check. Export browser cookies and set "
+            "YouTube refused the download (bot check / HTTP 403). This is common on "
+            "datacenter or shared IPs. On a normal home/Codespace network it usually "
+            "works; if not, export cookies from a logged-in browser and set "
             "BEATSYNC_YT_COOKIES=/path/cookies.txt (or BEATSYNC_YT_COOKIES_FROM_BROWSER=chrome). "
+            "You can also download the video yourself and upload the clip(s) directly. "
             f"Details: {tail}"
         )
     raise RuntimeError(f"YouTube download did not produce a video file. Details: {tail}")

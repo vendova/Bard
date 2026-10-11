@@ -675,11 +675,11 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                     session_state['local_audio_path'] = local_audio_path
                     session_state['original_audio_path'] = audio_file
                 else:
-                    return None, '❌ Error: Could not access audio file', session_state
+                    return None, '❌ Error: Could not access audio file', session_state, gr.update(visible=False)
             else:
                 local_audio_path = session_state.get('local_audio_path')
         else:
-            return None, '❌ Error: No audio file selected', session_state
+            return None, '❌ Error: No audio file selected', session_state, gr.update(visible=False)
 
         # Handle videos: a YouTube URL (downloaded + split into ~20 refreshed
         # clips) takes precedence; otherwise combine uploaded clips with any
@@ -701,9 +701,9 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                             f"📥 YouTube: prepared {len(local_video_paths)} clips"
                         )
                 except Exception as e:
-                    return None, f"❌ Error: YouTube source failed: {e}", session_state
+                    return None, f"❌ Error: YouTube source failed: {e}", session_state, gr.update(visible=False)
             elif yt_url:
-                return None, "❌ Error: That does not look like a YouTube link.", session_state
+                return None, "❌ Error: That does not look like a YouTube link.", session_state, gr.update(visible=False)
             else:
                 local_video_paths = _collect_video_clips(
                     video_files, zip_file, session_dir, console_logger
@@ -712,15 +712,15 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                 session_state['local_video_paths'] = local_video_paths
                 session_state['original_video_paths'] = sources_key
             else:
-                return None, '❌ Error: No video clips available. Upload clips, a zip of clips, or a YouTube link.', session_state
+                return None, '❌ Error: No video clips available. Upload clips, a zip of clips, or a YouTube link.', session_state, gr.update(visible=False)
         else:
             local_video_paths = session_state.get('local_video_paths')
 
         # Verify files exist
         if not local_audio_path or not os.path.exists(local_audio_path):
-             return None, f"❌ Error: Audio file is missing or inaccessible.", session_state
+             return None, f"❌ Error: Audio file is missing or inaccessible.", session_state, gr.update(visible=False)
         if not local_video_paths or not all(p and os.path.exists(p) for p in local_video_paths):
-             return None, f"❌ Error: Video files are missing or inaccessible.", session_state
+             return None, f"❌ Error: Video files are missing or inaccessible.", session_state, gr.update(visible=False)
         
         # Set GPU mode
         use_gpu = GPU_AVAILABLE
