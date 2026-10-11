@@ -108,7 +108,7 @@ gpu_info = f"{gpu_data['name']} ({gpu_data['cuda_version']})" if gpu_data['avail
 
 from video_processor import create_music_video
 from video_effects import EffectsConfig, parse_effects_from_ui, TRANSITION_TYPES
-from youtube_source import parse_links, prepare_clips_from_sources
+from youtube_source import download_media, parse_links, prepare_clips_from_sources
 
 from font_presets import get_combo_names as _get_font_combo_names
 from transition_presets import get_preset_names as _get_transition_preset_names
@@ -654,6 +654,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        zip_file: str | None = None,
                        qwen_semantics: bool = True,
                        youtube_url: str = "",
+                       overlay_url: str = "",
                        job_id: str | None = None) -> StatusResult:
     total_started = time.perf_counter()
     try:
@@ -878,6 +879,55 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             except Exception as lyrics_err:
                 console_logger.line(f"⚠️  Lyrics processing skipped: {lyrics_err}")
 
+        # ── Lyric/overlay video (lighten blend) ────────────────────────
+        # Alternative to a separate lyrics track: a download link to a
+        # black-background lyric clip (with its own audio) is downloaded and
+        # blended over the edited clips with a "lighten" effect — bright text
+        # merges on top while the base music track is preserved (no separate
+        # audio mixing). If the link 404s, try the same URL with a .mp4 suffix.
+        overlay_link = (overlay_url or "").strip()
+        if overlay_link:
+            try:
+                from ffmpeg_processing import overlay_video_lighten
+
+                _ov_candidates = [overlay_link]
+                if not overlay_link.lower().split('?')[0].endswith(('.mp4', '.mov', '.mkv', '.webm')):
+                    _ov_candidates.append(overlay_link.rstrip('/') + '.mp4')
+
+                overlay_src = None
+                last_err = None
+                for _cand in _ov_candidates:
+                    try:
+                        overlay_src = download_media(_cand, os.path.join(session_dir, "overlay"), log=console_logger.line if console_logger else None)
+                        break
+                    except Exception as _ov_err:
+                        last_err = _ov_err
+                        console_logger.line(f"⚠️  Overlay link attempt failed: {_ov_err}")
+
+                if not overlay_src:
+                    raise last_err or RuntimeError("could not download overlay video")
+
+                overlay_out = os.path.join(session_dir, f"overlay_{timestamp}.mp4")
+                overlay_video_lighten(
+                    base_file=result_path,
+                    overlay_file=overlay_src,
+                    output_file=overlay_out,
+                    fps=output_fps,
+                    use_nvenc=use_nvenc and NVENC_AVAILABLE,
+                    gpu_encoder=gpu_encoder,
+                )
+                if os.path.exists(overlay_out) and os.path.getsize(overlay_out) > 1000:
+                    try:
+                        os.remove(result_path)
+                    except OSError:
+                        pass
+                    result_path = overlay_out
+                    console_logger.line("✓ Lyric video overlaid (lighten blend)")
+                else:
+                    console_logger.line("⚠️  Overlay produced no output; keeping base video")
+            except Exception as overlay_err:
+                console_logger.line(f"⚠️  Lyric overlay skipped: {overlay_err}")
+
         # Move to output folder
         shutil.move(result_path, output_path)
 
@@ -1073,6 +1123,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  qwen_semantics: bool = True,
                  draft_mode: bool = False,
                  youtube_url: str = "",
+                 overlay_url: str = "",
                  regenerate: bool = False,
                  resume_job_id: str | None = None,
                  ) -> Iterator[StatusResult]:
@@ -1098,6 +1149,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
             color_boost_amount, glitch_strength, slow_motion_probability,
             smart_sync, lyrics_text, font_combo_name, transition_preset_name,
             qwen_semantics, draft_mode, youtube_url, regenerate, resume_job_id,
+            overlay_url,
         )
     finally:
         os.environ.pop("BEATSYNC_DRAFT", None)
@@ -1136,6 +1188,7 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                  youtube_url: str = "",
                  regenerate: bool = False,
                  resume_job_id: str | None = None,
+                 overlay_url: str = "",
                  ) -> Iterator[StatusResult]:
     status_queue: queue.Queue[str | None] = queue.Queue()
     result_queue: queue.Queue[StatusResult] = queue.Queue(maxsize=1)
@@ -1252,6 +1305,7 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                     zip_file=zip_file,
                     qwen_semantics=bool(qwen_semantics and QWEN_BACKEND_AVAILABLE),
                     youtube_url=youtube_url,
+                    overlay_url=overlay_url,
                     job_id=job_id,
                 )
         except Exception as e:
@@ -1325,6 +1379,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
                       qwen_semantics: bool = True,
                       draft_mode: bool = False,
                       youtube_url: str = "",
+                      overlay_url: str = "",
                       ) -> Iterator[StatusResult]:
     """Re-render with updated settings, reusing cached beat analysis.
 
@@ -1345,6 +1400,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
             smart_sync, lyrics_text, font_combo_name,
             transition_preset_name, qwen_semantics,
             draft_mode=draft_mode, youtube_url=youtube_url,
+            overlay_url=overlay_url,
             regenerate=False, resume_job_id=None,
         )
         return
@@ -1363,6 +1419,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
         smart_sync, lyrics_text, font_combo_name,
         transition_preset_name, qwen_semantics,
         draft_mode=draft_mode, youtube_url=youtube_url,
+        overlay_url=overlay_url,
         regenerate=True, resume_job_id=None,
     )
 
@@ -1527,6 +1584,18 @@ def create_ui() -> gr.Blocks:
                             label=LABEL_TRANSITION_PRESET,
                             info=INFO_TRANSITION_PRESET,
                         )
+                    overlay_link = gr.Textbox(
+                        label='🎞️ Lyric Video Link (optional, lighten overlay)',
+                        info=('Alternative to the lyrics text box: paste a download link to a '
+                              'lyric video (e.g. black background with animated lyrics and audio). '
+                              'It is downloaded and blended over your edited clips with a "lighten" '
+                              'effect so only the bright text shows through — the background stays '
+                              'your edited video and the original music is kept (no separate audio '
+                              'mixing). If the link 404s, the app retries with a .mp4 suffix.'),
+                        placeholder='https://example.com/lyrics_video',
+                        lines=1,
+                        elem_id='overlay-link-input',
+                    )
 
                 with gr.Row():
                     process_btn = gr.Button('🎬 Create Music Video', variant='primary', size='lg')
@@ -1564,6 +1633,7 @@ def create_ui() -> gr.Blocks:
             qwen_semantics_enabled,
             draft_mode_enabled,
             youtube_input,
+            overlay_link,
         ]
         _shared_outputs = [video_output, status_output, session_state, download_btn]
 

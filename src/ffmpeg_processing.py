@@ -1211,3 +1211,62 @@ def optimize_for_web(input_file: str, output_file: str,
     print(f"   ✓ Web-optimised: {final_size_mb:.1f} MB "
           f"(was {src_size_mb:.1f} MB, {ratio:.0f}%)")
     return final_output
+
+
+def overlay_video_lighten(base_file: str, overlay_file: str, output_file: str,
+                          fps: float = 30.0, use_nvenc: bool = False,
+                          gpu_encoder: str = 'h264_nvenc') -> str:
+    """Merge ``overlay_file`` onto ``base_file`` with a "lighten" blend.
+
+    Built for lyric videos: the base video (edited clips) plays in the
+    background; the overlay video (e.g. black-background lyrics animation with
+    its own audio) is scaled *up* to the base size and blended with the
+    ``lighten`` mode, so bright content (text) shows through while black areas
+    leave the base untouched. The overlay's audio is discarded — the base
+    video's music track is kept, so there is no separate audio mixing.
+
+    The overlay loops if shorter than the base and is trimmed if longer.
+    Returns the output path.
+    """
+    base_dur = get_video_duration(base_file)
+    if base_dur <= 0:
+        raise RuntimeError(f"Cannot probe duration of {base_file}; aborting overlay.")
+    base_w, base_h = get_video_resolution(base_file)
+
+    final_output = os.path.abspath(output_file)
+    os.makedirs(os.path.dirname(final_output) or '.', exist_ok=True)
+
+    # Scale the overlay UP to the base height (preserving aspect) so it covers
+    # the base, then centre-crop any excess to exactly the base dimensions.
+    # Upscaling keeps a black-background lyric clip sharp on top of the video.
+    scale = (f"scale=-2:{base_h}:force_original_aspect_ratio=increase,"
+             f"crop={base_w}:{base_h}")
+    filter_complex = (
+        f"[0:v]setpts=PTS-STARTPTS[base];"
+        f"[1:v]{scale}[ov];"
+        f"[base][ov]blend=all_mode=lighten:shortest=1[v]"
+    )
+
+    encoder_label = f"⚡ {gpu_encoder.upper()}" if use_nvenc else "💻 libx264"
+    print(f"\n{'='*60}")
+    print("✨ OVERLAYING LYRIC VIDEO (lighten blend, base audio kept)")
+    print(f"   Base: {os.path.basename(base_file)}  ({base_dur:.1f}s, {base_w}x{base_h})")
+    print(f"   Overlay: {os.path.basename(overlay_file)}")
+    print(f"   Encoder: {encoder_label}")
+    print(f"{'='*60}")
+
+    cmd = [FFMPEG_PATH, '-y']
+    if use_nvenc:
+        cmd.extend(['-hwaccel', 'cuda'])
+    cmd.extend(['-i', base_file, '-stream_loop', '-1', '-i', overlay_file])
+    cmd.extend(['-filter_complex', filter_complex, '-map', '[v]', '-map', '0:a?'])
+    cmd.extend(get_web_h264_args(fps=fps, use_nvenc=use_nvenc, gpu_encoder=gpu_encoder))
+    cmd.extend(['-t', f"{base_dur:.3f}", '-fps_mode', 'cfr', '-r', str(fps), final_output])
+
+    result = _run_media_command(cmd, timeout=7200)
+    if result.returncode != 0:
+        raise RuntimeError(f"Overlay failed: {_short_ffmpeg_error(result.stderr, 900)}")
+
+    if not os.path.exists(final_output) or os.path.getsize(final_output) == 0:
+        raise RuntimeError("Overlay failed: output file was not created.")
+    return final_output
