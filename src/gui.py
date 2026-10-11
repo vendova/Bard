@@ -904,24 +904,35 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             compressed_ext = '.mp4'
             compressed_name = f"{name}_{timestamp}{compressed_ext}"
             compressed_path = os.path.join(session_dir, compressed_name)
-            compress_video_to_target_size(
-                input_file=output_path,
-                output_file=compressed_path,
-                target_size_mb=_bsync_max_mb,
-                use_nvenc=use_nvenc and NVENC_AVAILABLE,
-                gpu_encoder=gpu_encoder,
-            )
-            # Replace the oversized file with the compressed H.264 copy.
             try:
-                os.remove(output_path)
-            except OSError:
-                pass
-            final_path = os.path.join(output_folder, compressed_name)
-            shutil.move(compressed_path, final_path)
-            output_path = final_path
-            filename = compressed_name
-            # ProRes mode is now effectively an H.264 playback copy.
-            is_prores = False
+                compress_video_to_target_size(
+                    input_file=output_path,
+                    output_file=compressed_path,
+                    target_size_mb=_bsync_max_mb,
+                    use_nvenc=use_nvenc and NVENC_AVAILABLE,
+                    gpu_encoder=gpu_encoder,
+                )
+            except Exception as compress_err:
+                # Never lose the render over a failed size cap: keep the
+                # uncompressed output and warn.
+                console_logger.line(f"⚠️  Compression skipped: {compress_err}")
+                if os.path.exists(compressed_path) and os.path.getsize(compressed_path) == 0:
+                    try:
+                        os.remove(compressed_path)
+                    except OSError:
+                        pass
+            else:
+                # Replace the oversized file with the compressed H.264 copy.
+                try:
+                    os.remove(output_path)
+                except OSError:
+                    pass
+                final_path = os.path.join(output_folder, compressed_name)
+                shutil.move(compressed_path, final_path)
+                output_path = final_path
+                filename = compressed_name
+                # ProRes mode is now effectively an H.264 playback copy.
+                is_prores = False
 
         # Create preview for ProRes if needed
         preview_path = output_path

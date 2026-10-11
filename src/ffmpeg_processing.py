@@ -149,6 +149,19 @@ def _run_media_command(cmd: List[str], timeout: int) -> subprocess.CompletedProc
     )
 
 
+def _run_pass(cmd: List[str], timeout: int = 7200) -> subprocess.CompletedProcess[str]:
+    """Run one encode pass, raising with ffmpeg's stderr tail if it fails.
+
+    Guards against the silent-0-byte-output failure mode: a two-pass encode
+    whose second pass errors would otherwise leave an empty file behind.
+    """
+    result = _run_media_command(cmd, timeout=timeout)
+    if result.returncode != 0:
+        tail = "\n".join((result.stderr or "").strip().splitlines()[-6:])
+        raise RuntimeError(f"ffmpeg encode pass failed (code {result.returncode}):\n{tail}")
+    return result
+
+
 def _safe_remove_file(path: str | None) -> None:
     """Best-effort removal for temporary media files."""
     if path and os.path.exists(path):
@@ -1035,21 +1048,25 @@ def compress_video_to_target_size(input_file: str, output_file: str,
                             '-b:v', bitrate_str, '-maxrate', bitrate_str,
                             '-bufsize', f"{(video_bitrate * 2) // 1000}k",
                             *pix_fmt, *audio_args, '-y', final_output]
-                _run_media_command(cmd, timeout=7200)
+                _run_pass(cmd)
         else:
-            # libx264 true two-pass for precise size targeting.
+            # libx264 true two-pass for precise size targeting. Both passes MUST
+            # share the same bit depth: a 10-bit source (e.g. the ProRes
+            # intermediate) otherwise makes pass 1 write 10-bit stats while
+            # pass 2 forces 8-bit yuv420p, and libx264 aborts with
+            # "different bitdepth setting than first pass".
             pass1 = [FFMPEG_PATH, '-y', '-i', input_file,
                      '-c:v', 'libx264', '-preset', 'slow', '-b:v', bitrate_str,
                      '-pass', '1', '-passlogfile', passlog,
-                     '-an', '-f', 'mp4', '-y', os.devnull]
-            _run_media_command(pass1, timeout=7200)
+                     *pix_fmt, '-an', '-f', 'mp4', '-y', os.devnull]
+            _run_pass(pass1)
 
             pass2 = [FFMPEG_PATH, '-y', '-i', input_file,
                      '-c:v', 'libx264', '-preset', 'slow', '-b:v', bitrate_str,
                      '-pass', '2', '-passlogfile', passlog,
                      *pix_fmt, *audio_args, '-movflags', '+faststart',
                      '-y', final_output]
-            _run_media_command(pass2, timeout=7200)
+            _run_pass(pass2)
     finally:
         for suffix in ('', '.log', '.log.mbtree'):
             p = passlog + suffix
@@ -1063,6 +1080,8 @@ def compress_video_to_target_size(input_file: str, output_file: str,
         raise RuntimeError("Compression failed: output file was not created.")
 
     final_size_mb = os.path.getsize(final_output) / (1024 * 1024)
+    if final_size_mb <= 0:
+        raise RuntimeError("Compression failed: output file is empty.")
     print(f"   ✓ Compressed output: {final_size_mb:.1f} MB "
           f"({'within' if final_size_mb <= target_size_mb else 'over'} {target_size_mb} MB target)")
     return final_output
