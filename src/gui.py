@@ -667,8 +667,37 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
         if 'session_dir' not in session_state or not os.path.isdir(session_state['session_dir']):
             session_state['session_dir'] = tempfile.mkdtemp(prefix='beatsync_', dir=GRADIO_TEMP_DIR)
         session_dir = session_state['session_dir']
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        # Handle audio by referencing the selected file path directly.
+        # ── Lyric/overlay video (lighten blend) ────────────────────────
+        # A download link to a black-background lyric clip (with its own
+        # audio) can be blended over the edited clips with a "lighten" effect:
+        # bright text merges on top while the base music is preserved. Its own
+        # audio can also serve as the music source, so no separate audio upload
+        # is needed. If the link 404s, retry the same URL with a .mp4 suffix.
+        overlay_link = (overlay_url or "").strip()
+        overlay_src = None
+        if overlay_link:
+            _ov_candidates = [overlay_link]
+            if not overlay_link.lower().split('?')[0].endswith(('.mp4', '.mov', '.mkv', '.webm')):
+                _ov_candidates.append(overlay_link.rstrip('/') + '.mp4')
+
+            for _cand in _ov_candidates:
+                try:
+                    overlay_src = download_media(
+                        _cand, os.path.join(session_dir, "overlay"),
+                        log=console_logger.line if console_logger else None,
+                    )
+                    break
+                except Exception as _ov_err:
+                    if console_logger:
+                        console_logger.line(f"⚠️  Overlay link attempt failed: {_ov_err}")
+            if overlay_src and console_logger:
+                console_logger.line(f"🎞️  Lyric overlay ready: {os.path.basename(overlay_src)}")
+
+        # Handle audio by referencing the selected file path directly. When no
+        # audio is uploaded but a lyric video was provided, extract the music
+        # from that video instead.
         if audio_file:
             if audio_file != session_state.get('original_audio_path'):
                 local_audio_path = _as_existing_source_path(audio_file)
@@ -679,8 +708,20 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                     return None, '❌ Error: Could not access audio file', session_state, gr.update(visible=False)
             else:
                 local_audio_path = session_state.get('local_audio_path')
+        elif overlay_src:
+            from ffmpeg_processing import extract_audio_track
+            try:
+                local_audio_path = extract_audio_track(
+                    overlay_src,
+                    os.path.join(session_dir, f"overlay_audio_{timestamp}.wav"),
+                    log=console_logger.line if console_logger else None,
+                )
+                if console_logger:
+                    console_logger.line("🎵 Using the lyric video's own audio (no separate file needed)")
+            except Exception as _audio_err:
+                return None, f"❌ Error: Could not use lyric video audio: {_audio_err}", session_state, gr.update(visible=False)
         else:
-            return None, '❌ Error: No audio file selected', session_state, gr.update(visible=False)
+            return None, '❌ Error: No audio file selected (upload audio or provide a lyric video link)', session_state, gr.update(visible=False)
 
         # Handle videos: one or more links (direct video URLs or YouTube/other
         # yt-dlp sites) take precedence — they are downloaded in turn and split
@@ -880,32 +921,13 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                 console_logger.line(f"⚠️  Lyrics processing skipped: {lyrics_err}")
 
         # ── Lyric/overlay video (lighten blend) ────────────────────────
-        # Alternative to a separate lyrics track: a download link to a
-        # black-background lyric clip (with its own audio) is downloaded and
-        # blended over the edited clips with a "lighten" effect — bright text
-        # merges on top while the base music track is preserved (no separate
-        # audio mixing). If the link 404s, try the same URL with a .mp4 suffix.
-        overlay_link = (overlay_url or "").strip()
-        if overlay_link:
+        # Blend the downloaded lyric video over the edited clips (already
+        # fetched above). When no audio was uploaded, the overlay's own
+        # soundtrack is the music track (audio_mode='overlay') and no separate
+        # audio mixing is needed.
+        if overlay_src:
             try:
                 from ffmpeg_processing import overlay_video_lighten
-
-                _ov_candidates = [overlay_link]
-                if not overlay_link.lower().split('?')[0].endswith(('.mp4', '.mov', '.mkv', '.webm')):
-                    _ov_candidates.append(overlay_link.rstrip('/') + '.mp4')
-
-                overlay_src = None
-                last_err = None
-                for _cand in _ov_candidates:
-                    try:
-                        overlay_src = download_media(_cand, os.path.join(session_dir, "overlay"), log=console_logger.line if console_logger else None)
-                        break
-                    except Exception as _ov_err:
-                        last_err = _ov_err
-                        console_logger.line(f"⚠️  Overlay link attempt failed: {_ov_err}")
-
-                if not overlay_src:
-                    raise last_err or RuntimeError("could not download overlay video")
 
                 overlay_out = os.path.join(session_dir, f"overlay_{timestamp}.mp4")
                 overlay_video_lighten(
@@ -915,6 +937,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                     fps=output_fps,
                     use_nvenc=use_nvenc and NVENC_AVAILABLE,
                     gpu_encoder=gpu_encoder,
+                    audio_mode='overlay' if not audio_file else 'base',
                 )
                 if os.path.exists(overlay_out) and os.path.getsize(overlay_out) > 1000:
                     try:
@@ -1585,13 +1608,14 @@ def create_ui() -> gr.Blocks:
                             info=INFO_TRANSITION_PRESET,
                         )
                     overlay_link = gr.Textbox(
-                        label='🎞️ Lyric Video Link (optional, lighten overlay)',
+                        label='🎞️ Lyric Video Link (optional, lighten overlay + audio)',
                         info=('Alternative to the lyrics text box: paste a download link to a '
                               'lyric video (e.g. black background with animated lyrics and audio). '
-                              'It is downloaded and blended over your edited clips with a "lighten" '
-                              'effect so only the bright text shows through — the background stays '
-                              'your edited video and the original music is kept (no separate audio '
-                              'mixing). If the link 404s, the app retries with a .mp4 suffix.'),
+                              'It is blended over your edited clips with a "lighten" effect so only '
+                              'the bright text shows through, and ITS OWN AUDIO is used as the music '
+                              'track — so you can leave the audio file empty and need no separate '
+                              'audio. If you do upload audio, the uploaded file wins. If the link '
+                              '404s, the app retries with a .mp4 suffix.'),
                         placeholder='https://example.com/lyrics_video',
                         lines=1,
                         elem_id='overlay-link-input',

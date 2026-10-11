@@ -19,7 +19,7 @@ import random
 import shutil
 import uuid
 import re
-from typing import Tuple, List
+from typing import Callable, Optional, Tuple, List
 
 
 from logger import (
@@ -1213,17 +1213,43 @@ def optimize_for_web(input_file: str, output_file: str,
     return final_output
 
 
+def extract_audio_track(video_file: str, output_file: str,
+                        log: Optional[Callable[[str], None]] = None) -> str:
+    """Extract the audio track from ``video_file`` to ``output_file``.
+
+    Used when a lyric-overlay video supplies its own soundtrack: librosa can't
+    reliably read an mp4, so the audio is pulled out to a plain container
+    (e.g. .wav) for beat detection.
+    """
+    os.makedirs(os.path.dirname(os.path.abspath(output_file)) or '.', exist_ok=True)
+    cmd = [FFMPEG_PATH, '-y', '-i', video_file, '-vn', '-ac', '2', '-ar', '44100',
+           output_file]
+    result = _run_media_command(cmd, timeout=1800)
+    if result.returncode != 0 or not os.path.exists(output_file) or os.path.getsize(output_file) == 0:
+        raise RuntimeError("Could not extract audio from the lyric video.")
+    if log:
+        log(f"   🎵 Extracted audio: {os.path.basename(output_file)} "
+            f"({os.path.getsize(output_file) / 1048576:.1f} MB)")
+    return output_file
+
+
 def overlay_video_lighten(base_file: str, overlay_file: str, output_file: str,
                           fps: float = 30.0, use_nvenc: bool = False,
-                          gpu_encoder: str = 'h264_nvenc') -> str:
+                          gpu_encoder: str = 'h264_nvenc',
+                          audio_mode: str = 'base') -> str:
     """Merge ``overlay_file`` onto ``base_file`` with a "lighten" blend.
 
     Built for lyric videos: the base video (edited clips) plays in the
     background; the overlay video (e.g. black-background lyrics animation with
     its own audio) is scaled *up* to the base size and blended with the
     ``lighten`` mode, so bright content (text) shows through while black areas
-    leave the base untouched. The overlay's audio is discarded — the base
-    video's music track is kept, so there is no separate audio mixing.
+    leave the base untouched.
+
+    ``audio_mode`` chooses which soundtrack survives:
+      • ``"base"``   — keep the base video's audio (overlay audio discarded)
+      • ``"overlay"``— use the overlay video's own audio as the music track,
+                       so no separate audio file is needed. The base video
+                       plays muted underneath.
 
     The overlay loops if shorter than the base and is trimmed if longer.
     Returns the output path.
@@ -1247,9 +1273,17 @@ def overlay_video_lighten(base_file: str, overlay_file: str, output_file: str,
         f"[base][ov]blend=all_mode=lighten:shortest=1[v]"
     )
 
+    use_overlay_audio = str(audio_mode).lower() == 'overlay'
+    if use_overlay_audio:
+        audio_map = ['-map', '1:a?']
+        audio_label = "overlay soundtrack (base muted)"
+    else:
+        audio_map = ['-map', '0:a?']
+        audio_label = "base audio kept"
+
     encoder_label = f"⚡ {gpu_encoder.upper()}" if use_nvenc else "💻 libx264"
     print(f"\n{'='*60}")
-    print("✨ OVERLAYING LYRIC VIDEO (lighten blend, base audio kept)")
+    print(f"✨ OVERLAYING LYRIC VIDEO (lighten blend, {audio_label})")
     print(f"   Base: {os.path.basename(base_file)}  ({base_dur:.1f}s, {base_w}x{base_h})")
     print(f"   Overlay: {os.path.basename(overlay_file)}")
     print(f"   Encoder: {encoder_label}")
@@ -1259,7 +1293,7 @@ def overlay_video_lighten(base_file: str, overlay_file: str, output_file: str,
     if use_nvenc:
         cmd.extend(['-hwaccel', 'cuda'])
     cmd.extend(['-i', base_file, '-stream_loop', '-1', '-i', overlay_file])
-    cmd.extend(['-filter_complex', filter_complex, '-map', '[v]', '-map', '0:a?'])
+    cmd.extend(['-filter_complex', filter_complex, '-map', '[v]', *audio_map])
     cmd.extend(get_web_h264_args(fps=fps, use_nvenc=use_nvenc, gpu_encoder=gpu_encoder))
     cmd.extend(['-t', f"{base_dur:.3f}", '-fps_mode', 'cfr', '-r', str(fps), final_output])
 
