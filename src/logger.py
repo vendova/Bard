@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import sys
+import shutil
 import subprocess
 import librosa
 from typing import Dict
@@ -20,13 +21,10 @@ if SRC_DIR not in sys.path:
 PORTABLE_CUDA_DIR = os.path.join(ROOT_DIR, 'bin', 'CUDA', 'v13.3')
 PORTABLE_PYTHON_DIR = os.path.join(ROOT_DIR, 'bin', 'python-3.13.14-embed-amd64')
 FFMPEG_BIN_DIR = os.path.join(ROOT_DIR, 'bin', 'ffmpeg')
-if os.name == 'nt':
-    FFMPEG_EXE = os.path.join(FFMPEG_BIN_DIR, 'ffmpeg.exe')
-else:
-    # Linux/other: prefer a bundled binary next to the folder, else system ffmpeg
-    FFMPEG_EXE = os.path.join(FFMPEG_BIN_DIR, 'ffmpeg')
-    if not os.path.exists(FFMPEG_EXE):
-        FFMPEG_EXE = 'ffmpeg'
+# Resolve ffmpeg robustly (env override → bundled bin/ → PATH → apt install)
+# so a Codespace whose base image lost system ffmpeg still works.
+from media_paths import resolve_ffmpeg as _resolve_ffmpeg
+FFMPEG_EXE, FFPROBE_EXE = _resolve_ffmpeg()
 
 def _package_installed(name: str) -> bool:
     try:
@@ -60,7 +58,7 @@ def _strip_path_prefix(path_value: str, prefix: str) -> str:
 USING_CUPY_CTK = _package_installed('cuda-toolkit') and not _env_truthy('BEATSYNC_FORCE_PORTABLE_CUDA')
 USING_PORTABLE_CUDA = os.path.exists(PORTABLE_CUDA_DIR) and not USING_CUPY_CTK
 USING_PORTABLE_PYTHON = os.path.exists(PORTABLE_PYTHON_DIR)
-FFMPEG_FOUND = os.path.exists(FFMPEG_EXE)
+FFMPEG_FOUND = os.path.isfile(FFMPEG_EXE) or bool(shutil.which(FFMPEG_EXE))
 
 # ============================================================================
 # SYSTEM DETECTION
@@ -140,7 +138,7 @@ def get_gpu_info() -> Dict:
 def check_nvenc() -> bool:
     """Check if FFmpeg supports NVIDIA hardware encoding (NVENC)."""
     try:
-        cmd = [FFMPEG_EXE if FFMPEG_FOUND else 'ffmpeg', '-encoders']
+        cmd = [FFMPEG_EXE, '-encoders']
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         return 'h264_nvenc' in result.stdout
     except Exception:

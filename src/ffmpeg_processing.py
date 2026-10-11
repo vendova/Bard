@@ -24,7 +24,6 @@ from typing import Callable, Optional, Tuple, List
 
 from logger import (
     setup_environment,
-    FFMPEG_EXE as FFMPEG_PATH,
     check_nvenc as check_nvenc_support,
 )
 from gpu_cpu_utils import MAX_THREADS
@@ -32,14 +31,10 @@ from gpu_cpu_utils import MAX_THREADS
 # Initialize environment
 setup_environment()
 
-# Set up FFPROBE_PATH based on FFMPEG_PATH
-if os.path.isabs(FFMPEG_PATH) and os.path.exists(FFMPEG_PATH):
-    _ffprobe = os.path.join(os.path.dirname(FFMPEG_PATH), 'ffprobe')
-    if not os.path.exists(_ffprobe):
-        _ffprobe = os.path.join(os.path.dirname(FFMPEG_PATH), 'ffprobe.exe')
-    FFPROBE_PATH = _ffprobe
-else:
-    FFPROBE_PATH = 'ffprobe'
+# Resolve ffmpeg/ffprobe robustly (env override → bundled bin/ → PATH → apt).
+# ffprobe is derived from ffmpeg's location so the pair always matches.
+from media_paths import resolve_ffmpeg as _resolve_ffmpeg
+FFMPEG_PATH, FFPROBE_PATH = _resolve_ffmpeg()
 
 
 NVENC_QUALITY_CQ = '1'

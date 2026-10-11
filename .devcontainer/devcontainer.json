@@ -1,0 +1,30 @@
+{
+  "name": "BeatSync-Engine (CPU-only)",
+  "image": "mcr.microsoft.com/devcontainers/python:3.13-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/ffmpeg:1": {
+      "version": "latest"
+    }
+  },
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "containerEnv": {
+    "PORT": "12000",
+    "GRADIO_SERVER_NAME": "0.0.0.0",
+    "GRADIO_ANALYTICS_ENABLED": "False"
+  },
+  "forwardPorts": [12000],
+  "portsAttributes": {
+    "12000": {
+      "label": "BeatSync GUI",
+      "onAutoForward": "openPreview"
+    }
+  },
+  "hostRequirements": {
+    "cpus": 4
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python"]
+    }
+  }
+}
