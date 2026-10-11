@@ -1054,7 +1054,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
     if draft_mode:
         os.environ["BEATSYNC_DRAFT"] = "1"
     try:
-        yield from _process_video_impl(
+        yield from _render_video_job(
             audio_file, video_files, output_filename, processing_mode,
             custom_fps, session_state, zip_file, effects_enabled,
             gradient_overlay, vignette, zoom_punch, shake, flash_on_beat,
@@ -1069,7 +1069,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
         os.environ.pop("BEATSYNC_DRAFT", None)
 
 
-def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
+def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                  output_filename: str, processing_mode: str,
                  custom_fps: float, session_state: dict,
                  zip_file: str | None = None,
