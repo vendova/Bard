@@ -29,8 +29,10 @@ import re
 import shutil
 import subprocess
 import tempfile
+import urllib.request
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence
+from urllib.parse import unquote, urlparse
 
 import cv2
 import numpy as np
@@ -120,6 +122,59 @@ def is_youtube_url(text: str) -> bool:
     return bool(re.search(r"(youtube\.com|youtu\.be)", text, re.IGNORECASE))
 
 
+_VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi")
+
+
+def is_video_url(text: str) -> bool:
+    """True for a direct media link (path ends in a known video extension)."""
+    if not text:
+        return False
+    path = urlparse(text.strip()).path
+    return path.lower().endswith(_VIDEO_EXTENSIONS)
+
+
+def _guess_filename(url: str) -> str:
+    path = unquote(urlparse(url).path)
+    name = os.path.basename(path) or "download"
+    root, ext = os.path.splitext(name)
+    if ext.lower() not in _VIDEO_EXTENSIONS:
+        ext = ".mp4"
+    return f"source{ext}" if not root else name
+
+
+def download_direct_url(url: str, dest_dir: str,
+                        log: Optional[Callable[[str], None]] = None) -> str:
+    """Download a direct media URL (no extraction needed) with a browser UA."""
+    os.makedirs(dest_dir, exist_ok=True)
+    out_path = os.path.join(dest_dir, _guess_filename(url))
+    req = urllib.request.Request(url, headers={
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        ),
+        "Accept": "*/*",
+    })
+    if log:
+        log(f"   ⬇️  Downloading {os.path.basename(out_path)}…")
+    with urllib.request.urlopen(req, timeout=120) as resp, open(out_path, "wb") as fh:
+        shutil.copyfileobj(resp, fh)
+    if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+        raise RuntimeError("Direct download produced an empty file (check the URL).")
+    return out_path
+
+
+def download_media(url: str, dest_dir: str,
+                   log: Optional[Callable[[str], None]] = None) -> str:
+    """Save any supported link: direct video URL, or a yt-dlp-supported page.
+
+    Direct links (``.mp4``/``.webm``/…) are fetched as-is; anything else
+    (YouTube, Vimeo, etc.) goes through yt-dlp.
+    """
+    if is_video_url(url):
+        return download_direct_url(url, dest_dir, log=log)
+    return download_youtube(url, dest_dir, log=log)
+
+
 def download_youtube(url: str, dest_dir: str,
                      log: Optional[Callable[[str], None]] = None) -> str:
     """Download ``url`` into ``dest_dir``; return the local video path.
@@ -177,14 +232,14 @@ def download_youtube(url: str, dest_dir: str,
     )
     if blocked:
         raise RuntimeError(
-            "YouTube refused the download (bot check / HTTP 403). This is common on "
+            "The site refused the download (bot check / HTTP 403). This is common on "
             "datacenter or shared IPs. On a normal home/Codespace network it usually "
             "works; if not, export cookies from a logged-in browser and set "
             "BEATSYNC_YT_COOKIES=/path/cookies.txt (or BEATSYNC_YT_COOKIES_FROM_BROWSER=chrome). "
             "You can also download the video yourself and upload the clip(s) directly. "
             f"Details: {tail}"
         )
-    raise RuntimeError(f"YouTube download did not produce a video file. Details: {tail}")
+    raise RuntimeError(f"Download did not produce a video file. Details: {tail}")
 
 
 # --------------------------------------------------------------------------- #
@@ -519,9 +574,9 @@ def prepare_youtube_clips(
     target_count: int = TARGET_CLIP_COUNT,
     log: Optional[Callable[[str], None]] = None,
 ) -> List[str]:
-    """Download ``url`` and return ~``target_count`` refreshed clips."""
+    """Download ``url`` (direct link or yt-dlp site) and return ~``target_count`` clips."""
     src_dir = os.path.join(session_dir, "youtube")
-    video = download_youtube(url, src_dir, log=log)
+    video = download_media(url, src_dir, log=log)
     if log:
         log(f"   📼 Source: {os.path.basename(video)} "
             f"({get_video_duration(video):.1f}s)")

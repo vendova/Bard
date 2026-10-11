@@ -108,7 +108,7 @@ gpu_info = f"{gpu_data['name']} ({gpu_data['cuda_version']})" if gpu_data['avail
 
 from video_processor import create_music_video
 from video_effects import EffectsConfig, parse_effects_from_ui, TRANSITION_TYPES
-from youtube_source import is_youtube_url, prepare_youtube_clips
+from youtube_source import prepare_youtube_clips
 
 from font_presets import get_combo_names as _get_font_combo_names
 from transition_presets import get_preset_names as _get_transition_preset_names
@@ -681,29 +681,30 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
         else:
             return None, '❌ Error: No audio file selected', session_state, gr.update(visible=False)
 
-        # Handle videos: a YouTube URL (downloaded + split into ~20 refreshed
-        # clips) takes precedence; otherwise combine uploaded clips with any
-        # clips extracted from an optional zip archive.
+        # Handle videos: a link (direct video URL or YouTube/other yt-dlp site)
+        # takes precedence and is downloaded + split into ~20 refreshed clips;
+        # otherwise combine uploaded clips with any clips from an optional zip.
         yt_url = (youtube_url or "").strip()
         sources_key = (tuple(video_files or ()), zip_file, yt_url)
         if sources_key != session_state.get('original_video_paths'):
-            if yt_url and is_youtube_url(yt_url):
-                try:
-                    def _yt_log(line: str) -> None:
-                        if console_logger:
-                            console_logger.line(line)
+            if yt_url:
+                if not re.match(r"^https?://", yt_url, re.IGNORECASE):
+                    return None, "❌ Error: Enter a valid http(s) video/download link.", session_state, gr.update(visible=False)
 
+                def _yt_log(line: str) -> None:
+                    if console_logger:
+                        console_logger.line(line)
+
+                try:
                     local_video_paths = prepare_youtube_clips(
                         yt_url, session_dir, target_count=20, log=_yt_log
                     )
                     if console_logger:
                         console_logger.line(
-                            f"📥 YouTube: prepared {len(local_video_paths)} clips"
+                            f"📥 Link source: prepared {len(local_video_paths)} clips"
                         )
                 except Exception as e:
-                    return None, f"❌ Error: YouTube source failed: {e}", session_state, gr.update(visible=False)
-            elif yt_url:
-                return None, "❌ Error: That does not look like a YouTube link.", session_state, gr.update(visible=False)
+                    return None, f"❌ Error: Link source failed: {e}", session_state, gr.update(visible=False)
             else:
                 local_video_paths = _collect_video_clips(
                     video_files, zip_file, session_dir, console_logger
@@ -1416,11 +1417,12 @@ def create_ui() -> gr.Blocks:
                 audio_input = gr.File(label=LABEL_AUDIO_FILE, file_types=['.mp3', '.wav', '.flac'], type='filepath', elem_id='audio-file-input')
                 video_input = gr.File(label=LABEL_VIDEO_FILES, file_count='multiple', file_types=['.mp4', '.mkv'], type='filepath', elem_id='video-files-input')
                 youtube_input = gr.Textbox(
-                    label='YouTube Link (optional)',
-                    placeholder='https://www.youtube.com/watch?v=...  or  https://youtu.be/...',
-                    info=('Downloads the video and builds up to 20 refreshed clips: it prefers '
-                          'shots without baked-in text overlays and keeps only dialogue/action '
-                          'audio. Overrides uploaded clips when set.'),
+                    label='Video Link (optional)',
+                    placeholder='Paste any video link: https://youtu.be/... , https://.../clip.mp4 , etc.',
+                    info=('Paste a YouTube link or any direct video/download URL. It is saved and '
+                          'split into up to 20 refreshed clips: shots without baked-in text '
+                          'overlays are preferred and only dialogue/action audio is kept. '
+                          'Overrides uploaded clips when set.'),
                     lines=1,
                     elem_id='youtube-link-input',
                 )
