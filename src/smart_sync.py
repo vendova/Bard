@@ -101,9 +101,8 @@ def smart_assign_clips(
     clip_energies = {c.get("id"): compute_clip_energy(c) for c in candidates}
     seg_energies = [compute_segment_energy(p) for p in profiles]
 
-    recent_ids: deque = deque(maxlen=8)
-    recent_videos: deque = deque(maxlen=4)
-    usage: Counter = Counter()
+    from clip_diversity import ClipDiversity
+    diversity = ClipDiversity(candidates)
     planned: List[Dict] = []
 
     for i, profile in enumerate(profiles):
@@ -129,14 +128,8 @@ def smart_assign_clips(
                 + 0.20 * _clamp(candidate.get("quality_score", 0.5), default=0.5)
             )
 
-            # Diversity penalties.
-            if cid in recent_ids:
-                score -= 0.30
-            video_file = candidate.get("video_file")
-            if video_file in recent_videos:
-                score -= 0.12
-            score -= min(0.30, usage[cid] * 0.12)
-            score -= min(0.20, usage[video_file] * 0.015)
+            # Diversity: prefer unused moments, never repeat back-to-back.
+            score += diversity.penalty(candidate, i)
 
             # Duration feasibility.
             required = max(0.05, profile.get("duration", 1.0))
@@ -156,10 +149,7 @@ def smart_assign_clips(
 
         planned_clip = _materialize_smart_clip(best_candidate, profile, i, seg_energy)
         planned.append(planned_clip)
-        recent_ids.append(best_candidate.get("id"))
-        recent_videos.append(best_candidate.get("video_file"))
-        usage[best_candidate.get("id")] += 1
-        usage[best_candidate.get("video_file")] += 1
+        diversity.register(best_candidate, i)
 
     return planned
 

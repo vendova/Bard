@@ -206,6 +206,49 @@ def _escape_ass_text(text: str) -> str:
     return text
 
 
+def _lyrics_scale() -> float:
+    """Global lyric size multiplier (bigger, bolder captions by default)."""
+    try:
+        value = float(os.environ.get("BEATSYNC_LYRICS_SCALE", "1.3"))
+    except ValueError:
+        value = 1.3
+    return max(1.0, min(2.5, value))
+
+
+# Vertical placement bands, from lowest to highest on screen. Consecutive lines
+# are placed in different bands so the text moves with the cut instead of
+# sitting in the same spot for the whole video.
+_LYRIC_BANDS = ("bottom", "lower", "center", "upper", "top")
+_BAND_WEIGHTS = {"bottom": 3, "lower": 3, "center": 2, "upper": 1, "top": 1}
+
+
+def _band_anchor(band: str, width: int, height: int, margin_v: int) -> Tuple[int, int, int]:
+    """Return (ASS alignment, x, y) for a placement band."""
+    cx = width // 2
+    if band == "top":
+        return 8, cx, max(48, margin_v)
+    if band == "upper":
+        return 8, cx, int(height * 0.22)
+    if band == "center":
+        return 5, cx, height // 2
+    if band == "lower":
+        return 2, cx, int(height * 0.72)
+    return 2, cx, height - max(48, margin_v)
+
+
+def _smart_band_plan(count: int, seed: int = 0) -> List[str]:
+    """Deterministic band per line that never repeats the previous band."""
+    rng = random.Random(20240 + seed)
+    plan: List[str] = []
+    prev = None
+    for _ in range(count):
+        choices = [b for b in _LYRIC_BANDS if b != prev]
+        pick = rng.choices(choices, weights=[_BAND_WEIGHTS[b] for b in choices])[0]
+        plan.append(pick)
+        prev = pick
+    return plan
+
+
 def generate_ass_file(
     lines: List[LyricLine],
     combo: FontCombo,
@@ -218,14 +261,19 @@ def generate_ass_file(
 
     Creates two styles (primary + secondary) and renders each lyric line
     with the selected animation. Lines alternate between primary and
-    secondary styling for visual variety.
+    secondary styling for visual variety, are scaled up for impact, and are
+    placed in rotating vertical bands so captions move across the frame
+    instead of staying pinned to one spot.
     """
+    scale = _lyrics_scale()
+    bands = _smart_band_plan(len(lines), seed=video_width)
+
     # Use transliterated text if available, else original
     display_lines = []
     for i, line in enumerate(lines):
         text = line.transliterated or line.text
         is_primary = (i % 2 == 0)  # Alternate primary/secondary
-        display_lines.append((line.start_time, line.end_time, text, is_primary))
+        display_lines.append((line.start_time, line.end_time, text, is_primary, bands[i]))
 
     # Build ASS header
     header = f"""[Script Info]
@@ -233,7 +281,7 @@ Title: BeatSync Lyrics
 ScriptType: v4.00+
 PlayResX: {video_width}
 PlayResY: {video_height}
-WrapStyle: 2
+WrapStyle: 0
 ScaledBorderAndShadow: yes
 YCbCr Matrix: TV.709
 
@@ -244,47 +292,60 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
     p = combo.primary
     s = combo.secondary
 
-    # Primary style
     p_bold = -1 if p.bold else 0
     p_italic = -1 if p.italic else 0
     s_bold = -1 if s.bold else 0
     s_italic = -1 if s.italic else 0
 
-    header += f"Style: Primary,{_font_name(p.font_file)},{p.size},{_ass_color(p.primary_color)},{_ass_color(p.primary_color)},{_ass_color(p.outline_color)},{_ass_color('&H80000000')},{p_bold},{p_italic},0,0,100,100,0,0,1,{p.outline_width},{p.shadow},{p.alignment},{p.margin_l},{p.margin_r},{p.margin_v},1\n"
-    header += f"Style: Secondary,{_font_name(s.font_file)},{s.size},{_ass_color(s.primary_color)},{_ass_color(s.primary_color)},{_ass_color(s.outline_color)},{_ass_color('&H80000000')},{s_bold},{s_italic},0,0,100,100,0,0,1,{s.outline_width},{s.shadow},{s.alignment},{s.margin_l},{s.margin_r},{s.margin_v},1\n"
+    # Scale sizes and beef up outline/shadow so big captions stay legible
+    # over busy footage.
+    p_size = int(round(p.size * scale))
+    s_size = int(round(s.size * scale))
+    p_outline = max(p.outline_width, int(round(p.outline_width * 1.4)))
+    s_outline = max(s.outline_width, int(round(s.outline_width * 1.4)))
+    p_shadow = max(p.shadow, 2)
+    s_shadow = max(s.shadow, 2)
+
+    header += f"Style: Primary,{_font_name(p.font_file)},{p_size},{_ass_color(p.primary_color)},{_ass_color(p.primary_color)},{_ass_color(p.outline_color)},{_ass_color('&H80000000')},{p_bold},{p_italic},0,0,100,100,1,0,1,{p_outline},{p_shadow},2,{p.margin_l},{p.margin_r},{p.margin_v},1\n"
+    header += f"Style: Secondary,{_font_name(s.font_file)},{s_size},{_ass_color(s.primary_color)},{_ass_color(s.primary_color)},{_ass_color(s.outline_color)},{_ass_color('&H80000000')},{s_bold},{s_italic},0,0,100,100,1,0,1,{s_outline},{s_shadow},2,{s.margin_l},{s.margin_r},{s.margin_v},1\n"
 
     # Build events
     events = "\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
 
-    for start, end, text, is_primary in display_lines:
+    for start, end, text, is_primary, band in display_lines:
         if not text.strip():
             continue
         style = "Primary" if is_primary else "Secondary"
         dur = end - start
 
-        # Animation: apply based on combo.animation
-        anim_text = _apply_ass_animation(text, combo.animation, dur, fps)
+        base_mv = p.margin_v if is_primary else s.margin_v
+        align, px, py = _band_anchor(band, video_width, video_height, base_mv)
+        anim_text = _apply_ass_animation(
+            text, combo.animation, dur, fps, alignment=align, x=px, y=py,
+        )
 
         events += f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},{style},,0,0,0,,{anim_text}\n"
 
-    # Background box style if enabled
+    # Background box style if enabled — draw behind each line at its band.
     if combo.bg_box:
-        # Add a drawing layer behind text for each line
         bg_events = ""
-        for i, (start, end, text, is_primary) in enumerate(display_lines):
+        for start, end, text, is_primary, band in display_lines:
             if not text.strip():
                 continue
-            style = "Primary" if is_primary else "Secondary"
-            mv = combo.primary.margin_v if is_primary else combo.secondary.margin_v
-            sz = combo.primary.size if is_primary else combo.secondary.size
-            # Create a semi-transparent box behind the text
-            bg_events += f"Dialogue: -1,{_ass_time(start)},{_ass_time(end)},Primary,,0,0,0,,{{\\1c{combo.bg_color}\\p1}}m 0 {video_height - mv - sz - 10} l {video_width} {video_height - mv - sz - 10} l {video_width} {video_height - mv + 10} l 0 {video_height - mv + 10}{{\\p0}}\n"
+            mv = p.margin_v if is_primary else s.margin_v
+            sz = p_size if is_primary else s_size
+            align, px, py = _band_anchor(band, video_width, video_height, mv)
+            top = max(0, py - sz - 12)
+            bottom = min(video_height, py + 14)
+            bg_events += (
+                f"Dialogue: -1,{_ass_time(start)},{_ass_time(end)},Primary,,0,0,0,,"
+                f"{{\\1c{combo.bg_color}\\p1}}m 0 {top} l {video_width} {top} "
+                f"l {video_width} {bottom} l 0 {bottom}{{\\p0}}\n"
+            )
         events = bg_events + events
 
-    # Add font attachment section
     full_content = header + events
 
-    # Also write font files alongside for fontconfig
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(full_content)
 
@@ -304,43 +365,47 @@ def _font_name(font_file: str) -> str:
     return name
 
 
-def _apply_ass_animation(text: str, animation: str, duration: float, fps: float) -> str:
-    """Apply ASS animation tags to text based on the animation type."""
+def _apply_ass_animation(text: str, animation: str, duration: float, fps: float,
+                         alignment: int = 2, x: int = 0, y: int = 0) -> str:
+    """Apply ASS animation tags to text based on the animation type.
+
+    ``alignment``/``x``/``y`` position the line at a chosen on-screen band so
+    captions can move across the frame. The alignment override is emitted on
+    every line so placement is independent of the base style.
+    """
     escaped = _escape_ass_text(text)
     half_dur = max(0.2, duration * 0.15)  # fade duration
+    fade_ms = int(half_dur * 1000)
+    pos = f"\\an{alignment}\\pos({x},{y})"
 
-    if animation == "fade":
-        return f"{{\\fad({int(half_dur * 1000)},{int(half_dur * 1000)})}}{escaped}"
-    elif animation == "slide_up":
-        return f"{{\\move(0,40,0,0,{int(half_dur * 1000)})\\fad({int(half_dur * 1000)},{int(half_dur * 1000)})}}{escaped}"
-    elif animation == "slide_left":
-        return f"{{\\move(-100,0,0,0,{int(half_dur * 1000)})\\fad({int(half_dur * 1000)},{int(half_dur * 1000)})}}{escaped}"
-    elif animation == "pop":
-        return f"{{\\fscx0\\fscy0\\t(0,{int(half_dur * 1000)},\\fscx100\\fscy100)\\fad({int(half_dur * 1000)},{int(half_dur * 1000)})}}{escaped}"
-    elif animation == "karaoke":
-        # Simple karaoke: highlight each character progressively
+    if animation == "slide_up":
+        return f"{{{pos}\\move({x},{y + 40},{x},{y},{fade_ms})\\fad({fade_ms},{fade_ms})}}{escaped}"
+    if animation == "slide_left":
+        return f"{{{pos}\\move({x - 100},{y},{x},{y},{fade_ms})\\fad({fade_ms},{fade_ms})}}{escaped}"
+    if animation == "pop":
+        return f"{{{pos}\\fscx0\\fscy0\\t(0,{fade_ms},\\fscx100\\fscy100)\\fad({fade_ms},{fade_ms})}}{escaped}"
+    if animation == "karaoke":
         chars = list(text)
         if not chars:
-            return escaped
+            return f"{{{pos}\\fad({fade_ms},{fade_ms})}}{escaped}"
         char_dur = duration * 1000 / max(1, len(chars))
-        result = ""
-        for i, ch in enumerate(chars):
+        result = f"{{{pos}}}"
+        for ch in chars:
             esc_ch = _escape_ass_text(ch)
             result += f"{{\\k{int(char_dur / 10)}}}{esc_ch}"
         return result
-    elif animation == "typewriter":
-        # Reveal text progressively
+    if animation == "typewriter":
         chars = list(text)
         if not chars:
-            return escaped
+            return f"{{{pos}\\fad({fade_ms},{fade_ms})}}{escaped}"
         char_delay = max(20, int(duration * 1000 / (len(chars) * 3)))
-        result = ""
+        result = f"{{{pos}}}"
         for i, ch in enumerate(chars):
             esc_ch = _escape_ass_text(ch)
             result += f"{{\\alpha&HFF&\\t({i * char_delay},{i * char_delay + 50},\\alpha&H00&)}}{esc_ch}"
         return result
-    else:
-        return f"{{\\fad({int(half_dur * 1000)},{int(half_dur * 1000)})}}{escaped}"
+    # Default: fade in place at the chosen band.
+    return f"{{{pos}\\fad({fade_ms},{fade_ms})}}{escaped}"
 
 
 # ---------------------------------------------------------------------------

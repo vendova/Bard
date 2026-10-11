@@ -88,4 +88,12 @@ Draft knobs (proxy quality for the preview pass only):
   export BEATSYNC_DRAFT_PRESET=ultrafast
   export BEATSYNC_DRAFT_MAX_WIDTH=960
   export BEATSYNC_DRAFT_MAX_HEIGHT=540
+
+Lyrics + clip-diversity controls:
+  export BEATSYNC_LYRICS_SCALE=1.3       # lyric size multiplier (1.0-2.5)
+  export BEATSYNC_MAX_OUTPUT_SECONDS=    # optional hard cap on output length
+  # By default the render adapts to the footage: if the music is longer than
+  # the total source video, the music is trimmed to the footage length so no
+  # clip is repeated to pad the runtime. Source moments are never reused
+  # back-to-back and are spread round-robin across the whole video.
 EOF

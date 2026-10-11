@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import random
-from collections import Counter, deque
+from collections import Counter
 from typing import Dict, List, Sequence
 
 import numpy as np
@@ -51,18 +51,15 @@ def build_planned_clip_sequence(
         return []
 
     profiles = _build_segment_profiles(cut_times_arr, durations_arr, beat_info)
-    recent_ids = deque(maxlen=10)
-    recent_videos = deque(maxlen=5)
-    usage = Counter()
+    from clip_diversity import ClipDiversity
+    diversity = ClipDiversity(candidates)
     planned: List[Dict] = []
 
     for i, profile in enumerate(profiles):
         candidate = _choose_candidate(
             candidates=candidates,
             profile=profile,
-            recent_ids=recent_ids,
-            recent_videos=recent_videos,
-            usage=usage,
+            diversity=diversity,
             index=i,
         )
         if not candidate:
@@ -73,10 +70,7 @@ def build_planned_clip_sequence(
             index=i,
         )
         planned.append(planned_clip)
-        recent_ids.append(candidate.get("id"))
-        recent_videos.append(candidate.get("video_file"))
-        usage[candidate.get("id")] += 1
-        usage[candidate.get("video_file")] += 1
+        diversity.register(candidate, i)
 
     if len(planned) != len(durations_arr):
         return []
@@ -86,14 +80,17 @@ def build_planned_clip_sequence(
 def summarize_clip_plan(plan: Sequence[Dict]) -> Dict:
     if not plan:
         return {"clip_count": 0, "targets": {}, "ai_tagged": 0}
+    from clip_diversity import summarize_reuse
     targets = Counter(str(item.get("target", "flow")) for item in plan)
     ai_tagged = sum(1 for item in plan if item.get("ai_analyzed"))
     source_count = len(set(item.get("video_file") for item in plan))
+    reuse = summarize_reuse(plan)
     return {
         "clip_count": len(plan),
         "targets": dict(targets),
         "ai_tagged": ai_tagged,
         "source_count": source_count,
+        **reuse,
     }
 
 
@@ -172,9 +169,7 @@ def _target_for_segment(section: Dict, wave: float, impact: float, rhythm: float
 def _choose_candidate(
     candidates: Sequence[Dict],
     profile: Dict,
-    recent_ids: deque,
-    recent_videos: deque,
-    usage: Counter,
+    diversity: "ClipDiversity",
     index: int,
 ) -> Dict | None:
     best_candidate = None
@@ -183,21 +178,7 @@ def _choose_candidate(
 
     for candidate in candidates:
         score = _score_candidate(candidate, profile)
-        cid = candidate.get("id")
-        video_file = candidate.get("video_file")
-
-        if cid in recent_ids:
-            score -= 0.28
-        if video_file in recent_videos:
-            score -= 0.10
-        score -= min(0.28, usage[cid] * 0.10)
-        score -= min(0.18, usage[video_file] * 0.012)
-
-        required_source = max(0.05, profile["duration"])
-        candidate_duration = max(0.05, float(candidate.get("duration", required_source)))
-        if candidate_duration < required_source * 0.55:
-            score -= 0.18
-
+        score += diversity.penalty(candidate, index)
         score += rng.random() * 0.015
         if score > best_score:
             best_score = score

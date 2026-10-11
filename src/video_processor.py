@@ -154,6 +154,47 @@ def _clean_planned_clips(planned: List[Dict] | None) -> List[Dict]:
     return out
 
 
+def _total_footage_seconds(video_files: List[str]) -> float:
+    """Sum the duration of every source video (the most video we can show)."""
+    total = 0.0
+    for path in video_files:
+        try:
+            total += max(0.0, float(get_video_duration(path)))
+        except Exception:
+            continue
+    return total
+
+
+def _max_output_seconds() -> float | None:
+    """Optional hard cap on output length, from the environment."""
+    raw = os.environ.get("BEATSYNC_MAX_OUTPUT_SECONDS", "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _resolve_duration_cap(video_files: List[str], audio_duration: float) -> float | None:
+    """Pick the output length so the video never outruns the footage.
+
+    The target is the largest length the source footage can fill. If the
+    music is longer than that, the render is cropped to the footage length
+    (the music is trimmed) instead of looping the same clips. An explicit
+    ``BEATSYNC_MAX_OUTPUT_SECONDS`` cap is honoured too.
+    """
+    cap = audio_duration
+    footage = _total_footage_seconds(video_files)
+    if footage > 0:
+        cap = min(cap, footage)
+    env_cap = _max_output_seconds()
+    if env_cap:
+        cap = min(cap, env_cap)
+    return cap if cap < audio_duration - 1e-6 else None
+
+
 def _log_disk_headroom(label: str = "") -> None:
     """Print free disk space so storage problems are visible before a render fails."""
     try:
@@ -572,6 +613,18 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         audio_duration = end_time - start_time
     elif start_time > 0:
         audio_duration = audio_duration - start_time
+
+    # Adapt the output length to the available footage: never show the same
+    # clip over and over to pad a long song. If the music outruns the source
+    # video, crop (trim) the music to the footage length instead.
+    if not replay_planned and not lossless_mode:
+        cap = _resolve_duration_cap(video_files, audio_duration)
+        if cap is not None:
+            print(f"✂️  Footage is shorter than the music — cropping output to "
+                  f"{cap:.2f}s (music trimmed) so no clip repeats to pad the length.")
+            audio_duration = cap
+            end_time = start_time + cap
+
     render_info["audio_duration"] = float(audio_duration)
     
     print(f"🎵 Audio duration: {audio_duration:.2f} seconds")
@@ -667,6 +720,10 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             match_err = np.mean([abs(s - c) for s, c in energies]) if energies else 0.0
             print(f"   ✓ {plan_summary['clip_count']} clips assigned (energy-match error: {match_err:.3f})")
             print(f"   Sources used: {plan_summary.get('source_count', 0)}")
+            if plan_summary.get("total_clips"):
+                print(f"   Distinct moments: {plan_summary.get('distinct_moments', 0)}"
+                      f"/{plan_summary['total_clips']}  "
+                      f"(back-to-back repeats: {plan_summary.get('back_to_back_repeats', 0)})")
             print(f"   Targets: {plan_summary.get('targets', {})}")
             if smart_transitions_list and not transition_preset_name:
                 from collections import Counter
