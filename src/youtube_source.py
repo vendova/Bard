@@ -634,6 +634,82 @@ def build_clips_from_video(
     return sorted(clips)
 
 
+def parse_links(text: str) -> List[str]:
+    """Split a blob of pasted text into individual http(s) links (deduped, in order)."""
+    parts = re.split(r"[\s,;]+", text or "")
+    links: List[str] = []
+    seen = set()
+    for p in parts:
+        p = p.strip()
+        if not p or p in seen:
+            continue
+        if p.lower().startswith("http://") or p.lower().startswith("https://"):
+            links.append(p)
+            seen.add(p)
+    return links
+
+
+def prepare_clips_from_sources(
+    links: Sequence[str],
+    session_dir: str,
+    target_count: int = TARGET_CLIP_COUNT,
+    log: Optional[Callable[[str], None]] = None,
+) -> List[str]:
+    """Download several links in turn, keep only usable footage, and build clips.
+
+    Every link is downloaded; clips are then cut from all sources and the
+    ``target_count`` best windows are kept, preferring shots with no baked-in
+    text overlays and spreading the count across sources.
+    """
+    links = [l.strip() for l in (links or []) if l and l.strip()]
+    if not links:
+        raise RuntimeError("No links provided.")
+
+    src_root = os.path.join(session_dir, "youtube")
+    clips_root = os.path.join(session_dir, "youtube_clips")
+    os.makedirs(clips_root, exist_ok=True)
+
+    downloaded: List[tuple] = []
+    for i, url in enumerate(links):
+        if log:
+            log(f"   🔗 Source {i + 1}/{len(links)}: {url}")
+        try:
+            video = download_media(url, os.path.join(src_root, f"src{i:02d}"), log=log)
+        except Exception as e:
+            if log:
+                log(f"   ⚠️  Source {i + 1} skipped: {e}")
+            continue
+        if log:
+            log(f"   📼 Source {i + 1}: {os.path.basename(video)} "
+                f"({get_video_duration(video):.1f}s)")
+        downloaded.append((i, video))
+
+    if not downloaded:
+        raise RuntimeError("None of the provided links could be downloaded.")
+
+    # Spread the target clip count evenly across the sources that worked.
+    n = len(downloaded)
+    base, extra = divmod(target_count, n)
+    per_source = [max(1, base + (1 if i < extra else 0)) for i in range(n)]
+
+    clips: List[str] = []
+    for (src_idx, video), want in zip(downloaded, per_source):
+        sub = os.path.join(clips_root, f"src{src_idx:02d}")
+        try:
+            got = build_clips_from_video(video, sub, target_count=want, log=log)
+        except Exception as e:
+            if log:
+                log(f"   ⚠️  Source {src_idx + 1} produced no clips: {e}")
+            continue
+        clips.extend(got)
+
+    if not clips:
+        raise RuntimeError("No usable clips could be built from the provided links.")
+    if log:
+        log(f"   ✅ {len(clips)} clips from {len(downloaded)} link(s)")
+    return sorted(clips)
+
+
 def prepare_youtube_clips(
     url: str,
     session_dir: str,
@@ -641,10 +717,4 @@ def prepare_youtube_clips(
     log: Optional[Callable[[str], None]] = None,
 ) -> List[str]:
     """Download ``url`` (direct link or yt-dlp site) and return ~``target_count`` clips."""
-    src_dir = os.path.join(session_dir, "youtube")
-    video = download_media(url, src_dir, log=log)
-    if log:
-        log(f"   📼 Source: {os.path.basename(video)} "
-            f"({get_video_duration(video):.1f}s)")
-    clips_dir = os.path.join(session_dir, "youtube_clips")
-    return build_clips_from_video(video, clips_dir, target_count=target_count, log=log)
+    return prepare_clips_from_sources([url], session_dir, target_count=target_count, log=log)

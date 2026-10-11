@@ -108,7 +108,7 @@ gpu_info = f"{gpu_data['name']} ({gpu_data['cuda_version']})" if gpu_data['avail
 
 from video_processor import create_music_video
 from video_effects import EffectsConfig, parse_effects_from_ui, TRANSITION_TYPES
-from youtube_source import prepare_youtube_clips
+from youtube_source import parse_links, prepare_clips_from_sources
 
 from font_presets import get_combo_names as _get_font_combo_names
 from transition_presets import get_preset_names as _get_transition_preset_names
@@ -681,27 +681,26 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
         else:
             return None, '❌ Error: No audio file selected', session_state, gr.update(visible=False)
 
-        # Handle videos: a link (direct video URL or YouTube/other yt-dlp site)
-        # takes precedence and is downloaded + split into ~20 refreshed clips;
-        # otherwise combine uploaded clips with any clips from an optional zip.
+        # Handle videos: one or more links (direct video URLs or YouTube/other
+        # yt-dlp sites) take precedence — they are downloaded in turn and split
+        # into ~20 refreshed clips; otherwise combine uploaded clips with any
+        # clips from an optional zip.
         yt_url = (youtube_url or "").strip()
-        sources_key = (tuple(video_files or ()), zip_file, yt_url)
+        yt_links = parse_links(yt_url)
+        sources_key = (tuple(video_files or ()), zip_file, tuple(yt_links))
         if sources_key != session_state.get('original_video_paths'):
-            if yt_url:
-                if not re.match(r"^https?://", yt_url, re.IGNORECASE):
-                    return None, "❌ Error: Enter a valid http(s) video/download link.", session_state, gr.update(visible=False)
-
+            if yt_links:
                 def _yt_log(line: str) -> None:
                     if console_logger:
                         console_logger.line(line)
 
                 try:
-                    local_video_paths = prepare_youtube_clips(
-                        yt_url, session_dir, target_count=20, log=_yt_log
+                    local_video_paths = prepare_clips_from_sources(
+                        yt_links, session_dir, target_count=20, log=_yt_log
                     )
                     if console_logger:
                         console_logger.line(
-                            f"📥 Link source: prepared {len(local_video_paths)} clips"
+                            f"📥 {len(yt_links)} link(s) → prepared {len(local_video_paths)} clips"
                         )
                 except Exception as e:
                     return None, f"❌ Error: Link source failed: {e}", session_state, gr.update(visible=False)
@@ -1428,13 +1427,15 @@ def create_ui() -> gr.Blocks:
                 audio_input = gr.File(label=LABEL_AUDIO_FILE, file_types=['.mp3', '.wav', '.flac'], type='filepath', elem_id='audio-file-input')
                 video_input = gr.File(label=LABEL_VIDEO_FILES, file_count='multiple', file_types=['.mp4', '.mkv'], type='filepath', elem_id='video-files-input')
                 youtube_input = gr.Textbox(
-                    label='Video Link (optional)',
-                    placeholder='Paste any video link: https://youtu.be/... , https://.../clip.mp4 , etc.',
-                    info=('Paste a YouTube link or any direct video/download URL. It is saved and '
-                          'split into up to 20 refreshed clips: shots without baked-in text '
-                          'overlays are preferred and only dialogue/action audio is kept. '
-                          'Overrides uploaded clips when set.'),
-                    lines=1,
+                    label='Video Link(s) (optional)',
+                    placeholder=('Paste one link per line (or space/comma separated):\n'
+                                 'https://youtu.be/...\n'
+                                 'https://.../clip.mp4'),
+                    info=('Paste one or more YouTube links or any direct video/download URLs. '
+                          'Each is saved in turn and split into refreshed clips: shots without '
+                          'baked-in text overlays are preferred and only dialogue/action audio is '
+                          'kept. Overrides uploaded clips when set.'),
+                    lines=3,
                     elem_id='youtube-link-input',
                 )
                 zip_input = gr.File(label=LABEL_ZIP_FILE, file_types=['.zip'], type='filepath', elem_id='zip-clips-input')
