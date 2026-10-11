@@ -108,6 +108,7 @@ gpu_info = f"{gpu_data['name']} ({gpu_data['cuda_version']})" if gpu_data['avail
 
 from video_processor import create_music_video
 from video_effects import EffectsConfig, parse_effects_from_ui, TRANSITION_TYPES
+from youtube_source import is_youtube_url, prepare_youtube_clips
 
 from font_presets import get_combo_names as _get_font_combo_names
 from transition_presets import get_preset_names as _get_transition_preset_names
@@ -652,6 +653,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        regenerate: bool = False,
                        zip_file: str | None = None,
                        qwen_semantics: bool = True,
+                       youtube_url: str = "",
                        job_id: str | None = None) -> StatusResult:
     total_started = time.perf_counter()
     try:
@@ -679,18 +681,38 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
         else:
             return None, '❌ Error: No audio file selected', session_state
 
-        # Handle videos: combine individually uploaded clips with any clips
-        # extracted from an optional zip archive.
-        sources_key = (tuple(video_files or ()), zip_file)
+        # Handle videos: a YouTube URL (downloaded + split into ~20 refreshed
+        # clips) takes precedence; otherwise combine uploaded clips with any
+        # clips extracted from an optional zip archive.
+        yt_url = (youtube_url or "").strip()
+        sources_key = (tuple(video_files or ()), zip_file, yt_url)
         if sources_key != session_state.get('original_video_paths'):
-            local_video_paths = _collect_video_clips(
-                video_files, zip_file, session_dir, console_logger
-            )
+            if yt_url and is_youtube_url(yt_url):
+                try:
+                    def _yt_log(line: str) -> None:
+                        if console_logger:
+                            console_logger.line(line)
+
+                    local_video_paths = prepare_youtube_clips(
+                        yt_url, session_dir, target_count=20, log=_yt_log
+                    )
+                    if console_logger:
+                        console_logger.line(
+                            f"📥 YouTube: prepared {len(local_video_paths)} clips"
+                        )
+                except Exception as e:
+                    return None, f"❌ Error: YouTube source failed: {e}", session_state
+            elif yt_url:
+                return None, "❌ Error: That does not look like a YouTube link.", session_state
+            else:
+                local_video_paths = _collect_video_clips(
+                    video_files, zip_file, session_dir, console_logger
+                )
             if local_video_paths:
                 session_state['local_video_paths'] = local_video_paths
                 session_state['original_video_paths'] = sources_key
             else:
-                return None, '❌ Error: No video clips available. Upload clips or a zip of clips.', session_state
+                return None, '❌ Error: No video clips available. Upload clips, a zip of clips, or a YouTube link.', session_state
         else:
             local_video_paths = session_state.get('local_video_paths')
 
@@ -1038,9 +1060,10 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  font_combo_name: str = "",
                  transition_preset_name: str = "",
                  qwen_semantics: bool = True,
+                 draft_mode: bool = False,
+                 youtube_url: str = "",
                  regenerate: bool = False,
                  resume_job_id: str | None = None,
-                 draft_mode: bool = False,
                  ) -> Iterator[StatusResult]:
     status_queue: queue.Queue[str | None] = queue.Queue()
     result_queue: queue.Queue[StatusResult] = queue.Queue(maxsize=1)
@@ -1063,7 +1086,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
             zoom_punch_strength, shake_strength, flash_intensity,
             color_boost_amount, glitch_strength, slow_motion_probability,
             smart_sync, lyrics_text, font_combo_name, transition_preset_name,
-            qwen_semantics, regenerate, resume_job_id,
+            qwen_semantics, draft_mode, youtube_url, regenerate, resume_job_id,
         )
     finally:
         os.environ.pop("BEATSYNC_DRAFT", None)
@@ -1098,6 +1121,8 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                  font_combo_name: str = "",
                  transition_preset_name: str = "",
                  qwen_semantics: bool = True,
+                 draft_mode: bool = False,
+                 youtube_url: str = "",
                  regenerate: bool = False,
                  resume_job_id: str | None = None,
                  ) -> Iterator[StatusResult]:
@@ -1215,6 +1240,7 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                     regenerate=regenerate,
                     zip_file=zip_file,
                     qwen_semantics=bool(qwen_semantics and QWEN_BACKEND_AVAILABLE),
+                    youtube_url=youtube_url,
                     job_id=job_id,
                 )
         except Exception as e:
@@ -1287,6 +1313,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
                       transition_preset_name: str = "",
                       qwen_semantics: bool = True,
                       draft_mode: bool = False,
+                      youtube_url: str = "",
                       ) -> Iterator[StatusResult]:
     """Re-render with updated settings, reusing cached beat analysis.
 
@@ -1306,7 +1333,8 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
             slow_motion_probability,
             smart_sync, lyrics_text, font_combo_name,
             transition_preset_name, qwen_semantics,
-            False, None, draft_mode,
+            draft_mode=draft_mode, youtube_url=youtube_url,
+            regenerate=False, resume_job_id=None,
         )
         return
 
@@ -1323,7 +1351,8 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
         slow_motion_probability,
         smart_sync, lyrics_text, font_combo_name,
         transition_preset_name, qwen_semantics,
-        regenerate=True, draft_mode=draft_mode,
+        draft_mode=draft_mode, youtube_url=youtube_url,
+        regenerate=True, resume_job_id=None,
     )
 
 
@@ -1386,6 +1415,15 @@ def create_ui() -> gr.Blocks:
                 gr.Markdown('### 📁 Input Files')
                 audio_input = gr.File(label=LABEL_AUDIO_FILE, file_types=['.mp3', '.wav', '.flac'], type='filepath', elem_id='audio-file-input')
                 video_input = gr.File(label=LABEL_VIDEO_FILES, file_count='multiple', file_types=['.mp4', '.mkv'], type='filepath', elem_id='video-files-input')
+                youtube_input = gr.Textbox(
+                    label='YouTube Link (optional)',
+                    placeholder='https://www.youtube.com/watch?v=...  or  https://youtu.be/...',
+                    info=('Downloads the video and builds up to 20 refreshed clips: it prefers '
+                          'shots without baked-in text overlays and keeps only dialogue/action '
+                          'audio. Overrides uploaded clips when set.'),
+                    lines=1,
+                    elem_id='youtube-link-input',
+                )
                 zip_input = gr.File(label=LABEL_ZIP_FILE, file_types=['.zip'], type='filepath', elem_id='zip-clips-input')
 
                 with gr.Group():
@@ -1511,6 +1549,7 @@ def create_ui() -> gr.Blocks:
             transition_preset,
             qwen_semantics_enabled,
             draft_mode_enabled,
+            youtube_input,
         ]
         _shared_outputs = [video_output, status_output, session_state, download_btn]
 

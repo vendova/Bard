@@ -96,4 +96,17 @@ Lyrics + clip-diversity controls:
   # the total source video, the music is trimmed to the footage length so no
   # clip is repeated to pad the runtime. Source moments are never reused
   # back-to-back and are spread round-robin across the whole video.
+
+YouTube link source (paste a URL in the "YouTube Link" box):
+  # Downloads the video and builds up to 20 refreshed clips. It prefers shots
+  # without baked-in text overlays (crops the text band if needed) and, by
+  # default, keeps only a few clips with audio and forces the rest silent so
+  # no background music leaks in. Needs yt-dlp + ffmpeg (installed above).
+  export BEATSYNC_YOUTUBE_KEEP_AUDIO=1        # 0 = every clip silent
+  export BEATSYNC_YOUTUBE_MAX_AUDIO_FRACTION=0.25  # share of clips that keep audio
+  export BEATSYNC_YOUTUBE_CLIP_SECONDS=2.6    # target seconds per clip
+  # Datacenter/Codespaces IPs are often bot-blocked by YouTube. Export cookies
+  # from a logged-in browser and point yt-dlp at them:
+  export BEATSYNC_YT_COOKIES=/path/to/cookies.txt
+  # or: export BEATSYNC_YT_COOKIES_FROM_BROWSER=chrome
 EOF
