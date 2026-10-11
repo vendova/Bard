@@ -133,20 +133,55 @@ def is_video_url(text: str) -> bool:
     return path.lower().endswith(_VIDEO_EXTENSIONS)
 
 
-def _guess_filename(url: str) -> str:
+def _guess_filename(url: str, content_disposition: str | None = None) -> str:
+    if content_disposition:
+        m = re.search(r"filename\*?=(?:UTF-8'')?\"?([^\";]+)", content_disposition, re.IGNORECASE)
+        if m:
+            name = unquote(m.group(1).strip())
+            if name:
+                root, ext = os.path.splitext(name)
+                if ext.lower() not in _VIDEO_EXTENSIONS:
+                    name = f"{root or 'source'}.mp4"
+                return name
     path = unquote(urlparse(url).path)
     name = os.path.basename(path) or "download"
     root, ext = os.path.splitext(name)
     if ext.lower() not in _VIDEO_EXTENSIONS:
         ext = ".mp4"
-    return f"source{ext}" if not root else name
+    return f"source{ext}" if not root else f"{root}{ext}"
+
+
+_PROBE_VIDEO_TYPES = ("video/", "application/octet-stream", "binary/octet-stream",
+                      "application/mp4", "application/x-matroska")
+
+
+def probe_content_type(url: str, log: Optional[Callable[[str], None]] = None) -> Optional[str]:
+    """Best-effort content-type of a URL (HEAD, then a ranged GET fallback)."""
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        ),
+        "Accept": "*/*",
+    }
+    for method in ("HEAD", "GET"):
+        try:
+            req = urllib.request.Request(url, headers=headers, method=method)
+            if method == "GET":
+                req.add_header("Range", "bytes=0-0")
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                ctype = (resp.headers.get_content_type() or "").lower()
+                if ctype:
+                    return ctype
+        except Exception:
+            continue
+    return None
 
 
 def download_direct_url(url: str, dest_dir: str,
                         log: Optional[Callable[[str], None]] = None) -> str:
     """Download a direct media URL (no extraction needed) with a browser UA."""
     os.makedirs(dest_dir, exist_ok=True)
-    out_path = os.path.join(dest_dir, _guess_filename(url))
     req = urllib.request.Request(url, headers={
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -154,10 +189,23 @@ def download_direct_url(url: str, dest_dir: str,
         ),
         "Accept": "*/*",
     })
-    if log:
-        log(f"   ⬇️  Downloading {os.path.basename(out_path)}…")
-    with urllib.request.urlopen(req, timeout=120) as resp, open(out_path, "wb") as fh:
-        shutil.copyfileobj(resp, fh)
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        ctype = (resp.headers.get_content_type() or "").lower()
+        if ctype.startswith("text/") or ctype == "application/json":
+            raise RuntimeError(
+                f"URL returned {ctype or 'an HTML page'}, not a video file "
+                "(it may be a landing page rather than a direct link)."
+            )
+        if ctype and not any(ctype.startswith(t) or ctype == t for t in _PROBE_VIDEO_TYPES):
+            if log:
+                log(f"   ⚠️  Unusual content-type {ctype}; saving anyway")
+        out_path = os.path.join(
+            dest_dir, _guess_filename(url, resp.headers.get("Content-Disposition"))
+        )
+        if log:
+            log(f"   ⬇️  Downloading {os.path.basename(out_path)}…")
+        with open(out_path, "wb") as fh:
+            shutil.copyfileobj(resp, fh)
     if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
         raise RuntimeError("Direct download produced an empty file (check the URL).")
     return out_path
@@ -165,14 +213,32 @@ def download_direct_url(url: str, dest_dir: str,
 
 def download_media(url: str, dest_dir: str,
                    log: Optional[Callable[[str], None]] = None) -> str:
-    """Save any supported link: direct video URL, or a yt-dlp-supported page.
+    """Save any supported link: direct video URL, downloader endpoint, or site page.
 
-    Direct links (``.mp4``/``.webm``/…) are fetched as-is; anything else
-    (YouTube, Vimeo, etc.) goes through yt-dlp.
+    Routing:
+      * URL ending in a media extension -> fetch directly.
+      * URL whose server reports a video/octet-stream content-type (e.g. a
+        ``.../admin-ajax.php?action=download`` endpoint) -> fetch directly.
+      * otherwise -> yt-dlp; if yt-dlp refuses due to an unusual extension,
+        fall back to a direct fetch.
     """
     if is_video_url(url):
         return download_direct_url(url, dest_dir, log=log)
-    return download_youtube(url, dest_dir, log=log)
+
+    ctype = probe_content_type(url, log=log)
+    if ctype and any(ctype.startswith(t) or ctype == t for t in _PROBE_VIDEO_TYPES):
+        if log:
+            log(f"   🔎 Server reports {ctype} → direct download")
+        return download_direct_url(url, dest_dir, log=log)
+
+    try:
+        return download_youtube(url, dest_dir, log=log)
+    except RuntimeError as e:
+        if "unusual and will be skipped" in str(e) or "unusual extension" in str(e):
+            if log:
+                log("   ↩️  yt-dlp skipped the file; retrying as a direct download")
+            return download_direct_url(url, dest_dir, log=log)
+        raise
 
 
 def download_youtube(url: str, dest_dir: str,
