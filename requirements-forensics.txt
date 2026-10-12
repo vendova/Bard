@@ -1,0 +1,10 @@
+# Optional extras for the forensics package (src/forensics).
+#
+# Scene detection: enables the content/adaptive backends. Without it the
+# package falls back to ffmpeg's scene filter, so this is not required.
+scenedetect[opencv]>=0.6.4
+
+# System tools used for the optional metadata cross-check (install with apt):
+#   libimage-exiftool-perl   -> exiftool
+#   mediainfo                -> mediainfo
+# The report degrades gracefully when these are absent.

@@ -121,6 +121,11 @@ from auto_mode import analyze_beats_auto
 
 # Import UI content
 from ui_content import *
+try:
+    from forensics.gui_panel import analyze_path as _forensics_analyze
+except Exception as _fe:  # forensics is optional; never block the app
+    _forensics_analyze = None
+    print(f"⚠️  Forensics panel unavailable: {_fe}")
 
 # ── Qwen backend availability probe ────────────────────────────────────
 # Used to smartly enable/disable the semantic-detection toggle in the UI.
@@ -1636,6 +1641,24 @@ def create_ui() -> gr.Blocks:
                 video_output = gr.Video(label='Generated Music Video', format='mp4', interactive=False, elem_id='generated-video-output')
                 download_btn = gr.DownloadButton('⬇️ Download MP4', variant='secondary', visible=False, elem_id='download-video-btn')
 
+                with gr.Accordion(LABEL_FORENSICS_SECTION, open=False):
+                    gr.Markdown(INFO_FORENSICS_SECTION)
+                    forensics_input = gr.File(
+                        label=LABEL_FORENSICS_INPUT,
+                        file_types=['.mp4', '.mkv', '.mov', '.m4v', '.webm', '.avi'],
+                        type='filepath',
+                    )
+                    forensics_method = gr.Radio(
+                        choices=FORENSICS_METHOD_CHOICES,
+                        value='auto',
+                        label=LABEL_FORENSICS_METHOD,
+                    )
+                    forensics_btn = gr.Button(LABEL_FORENSICS_RUN, variant='secondary')
+                    forensics_output = gr.Markdown(
+                        label=LABEL_FORENSICS_OUTPUT,
+                        value='_Choose a video file to analyse._',
+                    )
+
         _shared_inputs = [
             audio_input, video_input,
             output_filename, processing_mode, custom_fps,
@@ -1700,6 +1723,14 @@ def create_ui() -> gr.Blocks:
             fn=None,
             js=_AUTO_DOWNLOAD_JS,
         )
+
+        if _forensics_analyze is not None:
+            forensics_btn.click(
+                fn=_forensics_analyze,
+                inputs=[forensics_input, forensics_method],
+                outputs=forensics_output,
+                show_progress='full',
+            )
 
     return app
 

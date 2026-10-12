@@ -366,6 +366,25 @@ INFO_DRAFT_MODE = (
     "manifest to rebuild the identical edit at full quality."
 )
 
+LABEL_FORENSICS_SECTION = "🔬 Forensics — How Was This Video Made?"
+INFO_FORENSICS_SECTION = (
+    "Analyse a finished video: which software wrote it (ftyp brand + encoder "
+    "metadata), the GOP/keyframe structure and re-encode/splice traces, and the "
+    "reconstructed shot timeline. Reads container bytes directly; nothing is "
+    "uploaded anywhere."
+)
+LABEL_FORENSICS_INPUT = "🎞️ Video to analyse"
+LABEL_FORENSICS_METHOD = "Shot detection"
+FORENSICS_METHOD_CHOICES = [
+    ("Auto (PySceneDetect if installed, else ffmpeg)", "auto"),
+    ("PySceneDetect — content", "content"),
+    ("PySceneDetect — adaptive (soft cuts)", "adaptive"),
+    ("ffmpeg scene filter", "ffmpeg"),
+    ("Container/GOP only (no shot detection)", "container-only"),
+]
+LABEL_FORENSICS_RUN = "🔬 Analyse Video"
+LABEL_FORENSICS_OUTPUT = "Forensic Report"
+
 LABEL_RESUME_SECTION = "♻️ Resume Last Render"
 INFO_RESUME_SECTION = (
     "After a refresh, crash, or host restart (e.g. a memory-limit kill), reconnect to your last "

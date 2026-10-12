@@ -74,6 +74,35 @@ Health: `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:12000/`
   ("inputs needs to be a constant frame rate"). Keep the `fps` normalisation on
   both sides of every join when touching this filter graph.
 
+## Forensics (`src/forensics`)
+
+Offline analysis of a finished video — "how was this edit made?" — with no
+external service. Two independent halves, deliberately kept honest about what
+each signal can and cannot prove:
+
+- `containers.py` — a from-scratch ISO-BMFF box/atom parser (no dependencies).
+  Reads `ftyp` brands, `udta`/`meta` tags (incl. iTunes `©too`), `stss`
+  keyframes, `stts`/`stsz`/`stco`, and `elst` edit lists.
+- `fingerprint.py` — attributes the writing software from brands + metadata
+  (`ftyp` brand = strong, generic tags = weak), reporting confidence.
+- `reencode.py` — GOP length stats and splice evidence. Note: a **uniform GOP
+  is normal for any single-pass encode**, not proof of a re-encode; irregular
+  GOPs suggest a concat/assembly. An `elst` with a large non-zero `media_time`
+  marks a stream-copy trim; a trim that was re-encoded re-zeroes it, so absence
+  is not evidence of no edit.
+- `scenes.py` — shot detection; uses `scenedetect` when installed (content or
+  adaptive), else ffmpeg `select=gt(scene,…)`. `probe_media` wraps ffprobe.
+- `report.py` — `analyze_file()` / `format_report()` and a CLI
+  (`python -m forensics.report <file> [--json]`).
+- `gui_panel.py` — the Gradio glue (kept UI-free in the core). Surfaced as the
+  "🔬 Forensics" accordion. The import is wrapped in try/except so a broken
+  optional dep never blocks the app.
+
+System tools (`exiftool`, `mediainfo`) and the `scenedetect` Python extra
+(`requirements-forensics.txt`) are optional; the report degrades gracefully.
+
+Tests are in `tests/` (pytest, ffmpeg-generated fixtures via `conftest.py`).
+
 ## Conventions
 
 - Keep changes minimal; the render pipeline is CPU-only (libx264).

@@ -322,4 +322,38 @@ Best for:
 
 ---
 
+## 🔬 Forensics — how was this video made?
+
+The **Forensics** accordion (and the `src/forensics` package) analyses an
+existing video offline — nothing is uploaded. It answers two different
+questions, and is explicit about what each can prove:
+
+* **Which software wrote it?** Fingerprinted from the `ftyp` brand and the
+  `udta`/`meta` metadata tags (e.g. an `©too` encoder string). `ftyp` brands are
+  strong evidence; generic tags are weak, so each result carries a confidence.
+* **How was it structured?** A from-scratch ISO-BMFF box parser reads the
+  keyframe table (`stss`), sample timing (`stts`), chunk layout (`stco`) and
+  edit lists (`elst`). From this it derives GOP length, flags a concat/assembly
+  (irregular GOPs) or a stream-copy trim (a large edit-list offset), and
+  reconstructs the shot timeline.
+
+Shot detection uses [PySceneDetect](https://github.com/Breakthrough/PySceneDetect)
+when installed (content or adaptive) and otherwise falls back to ffmpeg's
+`select=gt(scene,…)` filter — so it works with no extra Python dependency.
+
+CLI:
+
+```bash
+PYTHONPATH=src python -m forensics.report path/to/video.mp4 [--json] [--no-scenes]
+```
+
+Optional extras (nice-to-have, not required) are listed in
+`requirements-forensics.txt`; the report degrades gracefully without them.
+
+> Honest limit: from a rendered file you can recover the writer software, the
+> encode/GOP structure, and the cut points — but **not** effect parameters,
+> source clips, or the editor's intent. Those live only in the project file.
+
+---
+
 *If BeatSync Engine saves you editing time, give the repository a star! ⭐*
