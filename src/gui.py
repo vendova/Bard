@@ -112,12 +112,51 @@ from youtube_source import download_media, parse_links, prepare_clips_from_sourc
 
 from font_presets import get_combo_names as _get_font_combo_names
 from transition_presets import get_preset_names as _get_transition_preset_names
+from look_presets import get_look_names as _get_look_names
+from theme_presets import get_theme_names as _get_theme_names
 
 # Build UI dropdown choices with a "Random" option at top
 _FONT_COMBO_CHOICES = [("🎲 Random (new combo each render)", "")] + [(n, n) for n in _get_font_combo_names()]
 _TRANSITION_PRESET_CHOICES = [("🎲 Random (new preset each render)", "")] + [(n, n) for n in _get_transition_preset_names()]
+# Looks already include a neutral "None"; add 🎲 Random on top.
+_LOOK_CHOICES = [("🎲 Random (new look each render)", "")] + [(n, n) for n in _get_look_names()]
+# Themes already include "None"; add 🎲 Random on top.
+_THEME_CHOICES = [("🎲 Random (new theme each render)", "")] + [(n, n) for n in _get_theme_names()]
 
 from auto_mode import analyze_beats_auto
+
+
+def apply_theme(theme_choice: str, look_choice: str, effects_enabled: bool,
+                vignette: bool, color_boost: bool, gradient_overlay: bool,
+                vignette_strength: float, color_boost_amount: float):
+    """Resolve a theme selection into the effect/font/look/transition widgets.
+
+    Returns gradio updates for (theme, font_combo, look, transition_preset,
+    effects_enabled, vignette, color_boost, gradient_overlay, vignette_strength,
+    color_boost_amount). Choosing a theme overwrites those pickers with the
+    theme's bundled defaults; 'None' leaves the current picks untouched.
+    """
+    from theme_presets import get_theme_by_name, is_noop
+
+    theme = get_theme_by_name(theme_choice) if theme_choice else None
+    if is_noop(theme):
+        # No-op: only echo back the current values.
+        return (gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+                gr.update(), gr.update(), gr.update(), gr.update(), gr.update())
+
+    return (
+        gr.update(value=theme.name),
+        gr.update(value=theme.font_combo),
+        gr.update(value=theme.look or look_choice),
+        gr.update(value=theme.transition_preset),
+        gr.update(value=theme.effects_enabled),
+        gr.update(value=theme.vignette),
+        gr.update(value=theme.color_boost),
+        gr.update(value=theme.gradient_overlay),
+        gr.update(value=theme.vignette_strength),
+        gr.update(value=theme.color_boost_amount),
+    )
+
 
 # Import UI content
 from ui_content import *
@@ -653,6 +692,8 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        lyrics_text: str = "",
                        font_combo_name: str = "",
                        transition_preset_name: str = "",
+                       look_name: str = "",
+                       theme_name: str = "",
                        progress_callback: Callable[[str], None] | None = None,
                        console_logger: StageConsoleLogger | None = None,
                        regenerate: bool = False,
@@ -948,6 +989,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             effects_config=effects_config,
             smart_sync=smart_sync,
             transition_preset_name=transition_preset_name,
+            theme_name=theme_name,
             job_id=job_id,
             export_timeline=export_timeline,
             timeline_dir=session_dir,
@@ -1269,6 +1311,8 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  lyrics_text: str = "",
                  font_combo_name: str = "",
                  transition_preset_name: str = "",
+                 look_name: str = "",
+                 theme_name: str = "",
                  qwen_semantics: bool = True,
                  draft_mode: bool = False,
                  youtube_url: str = "",
@@ -1305,6 +1349,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
             zoom_punch_strength, shake_strength, flash_intensity,
             color_boost_amount, glitch_strength, slow_motion_probability,
             smart_sync, lyrics_text, font_combo_name, transition_preset_name,
+            look_name, theme_name,
             qwen_semantics, draft_mode, youtube_url, regenerate, resume_job_id,
             overlay_url, stabilize, stabilize_smoothing, interpolate,
             interpolate_fps, rife, remove_dead_space, export_timeline,
@@ -1342,6 +1387,8 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                  lyrics_text: str = "",
                  font_combo_name: str = "",
                  transition_preset_name: str = "",
+                 look_name: str = "",
+                 theme_name: str = "",
                  qwen_semantics: bool = True,
                  draft_mode: bool = False,
                  youtube_url: str = "",
@@ -1410,16 +1457,43 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
     log_capture = LiveLogCapture(sys.__stdout__, push_line)
     console_logger = StageConsoleLogger(log_capture)
 
-    # Resolve "Random" selections — pick a random font combo and/or
-    # transition preset so each render produces different results.
+    # Resolve "Random" selections so each render produces different results.
+    # Order: theme first (it can fill font/look/transition), then any remaining
+    # blank pickers get a random value.
+    import random as _rng
+    if not theme_name:
+        from theme_presets import get_random_theme as _grt
+        theme_name = _grt(_rng.Random()).name
+    try:
+        from theme_presets import get_theme_by_name as _gtbn, is_noop as _tnoop
+        _theme = _gtbn(theme_name) if theme_name else None
+        if not _tnoop(_theme):
+            if not font_combo_name:
+                font_combo_name = _theme.font_combo
+            if not look_name:
+                look_name = _theme.look
+            if not transition_preset_name:
+                transition_preset_name = _theme.transition_preset
+    except Exception:
+        _theme = None
+    if not look_name:
+        from look_presets import get_random_look as _grl
+        look_name = _grl(_rng.Random()).name
     if not font_combo_name:
-        import random as _rng
         from font_presets import get_random_combo as _grc
         font_combo_name = _grc(_rng.Random()).name
     if not transition_preset_name:
-        import random as _rng2
         from transition_presets import get_random_preset as _grp
-        transition_preset_name = _grp(_rng2.Random()).name
+        transition_preset_name = _grp(_rng.Random()).name
+    if console_logger:
+        console_logger.line(f"🎨 Theme: {theme_name}  |  Look: {look_name}")
+    if job_id and _jobs is not None:
+        try:
+            _jobs.update_job(job_id, theme_name=theme_name, look_name=look_name,
+                             font_combo_name=font_combo_name,
+                             transition_preset_name=transition_preset_name)
+        except Exception:
+            pass
 
     def progress_callback(message: str) -> None:
         status_queue.put(message)
@@ -1453,6 +1527,7 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                     color_boost_amount=color_boost_amount,
                     glitch_strength=glitch_strength,
                     slow_motion_probability=slow_motion_probability,
+                    look_name=look_name,
                 )
                 result = _process_video_impl(
                     audio_file=audio_file,
@@ -1466,6 +1541,8 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                     lyrics_text=lyrics_text,
                     font_combo_name=font_combo_name,
                     transition_preset_name=transition_preset_name,
+                    look_name=look_name,
+                    theme_name=theme_name,
                     progress_callback=progress_callback,
                     console_logger=console_logger,
                     regenerate=regenerate,
@@ -1551,6 +1628,8 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
                       lyrics_text: str = "",
                       font_combo_name: str = "",
                       transition_preset_name: str = "",
+                      look_name: str = "",
+                      theme_name: str = "",
                       qwen_semantics: bool = True,
                       draft_mode: bool = False,
                       youtube_url: str = "",
@@ -1581,7 +1660,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
             color_boost_amount, glitch_strength,
             slow_motion_probability,
             smart_sync, lyrics_text, font_combo_name,
-            transition_preset_name, qwen_semantics,
+            transition_preset_name, look_name, theme_name, qwen_semantics,
             draft_mode=draft_mode, youtube_url=youtube_url,
             overlay_url=overlay_url,
             regenerate=False, resume_job_id=None,
@@ -1604,7 +1683,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
         color_boost_amount, glitch_strength,
         slow_motion_probability,
         smart_sync, lyrics_text, font_combo_name,
-        transition_preset_name, qwen_semantics,
+        transition_preset_name, look_name, theme_name, qwen_semantics,
         draft_mode=draft_mode, youtube_url=youtube_url,
         overlay_url=overlay_url,
         regenerate=True, resume_job_id=None,
@@ -1709,6 +1788,12 @@ def create_ui() -> gr.Blocks:
                     )
 
                 with gr.Accordion('✨ Visual Effects & Transitions', open=False):
+                    theme_preset = gr.Dropdown(
+                        choices=_THEME_CHOICES,
+                        value="",
+                        label=LABEL_THEME,
+                        info=INFO_THEME,
+                    )
                     effects_enabled = gr.Checkbox(value=False, label=LABEL_EFFECTS_ENABLED, info=INFO_EFFECTS_ENABLED)
                     smart_sync_enabled = gr.Checkbox(value=False, label=LABEL_SMART_SYNC, info=INFO_SMART_SYNC)
                     qwen_semantics_enabled = gr.Checkbox(
@@ -1789,6 +1874,12 @@ def create_ui() -> gr.Blocks:
                             label=LABEL_TRANSITION_PRESET,
                             info=INFO_TRANSITION_PRESET,
                         )
+                    look_preset = gr.Dropdown(
+                        choices=_LOOK_CHOICES,
+                        value="",
+                        label=LABEL_LOOK,
+                        info=INFO_LOOK,
+                    )
                     overlay_link = gr.Textbox(
                         label='🎞️ Lyric Video Link (optional, lighten overlay + audio)',
                         info=('Alternative to the lyrics text box: paste a download link to a '
@@ -1854,6 +1945,8 @@ def create_ui() -> gr.Blocks:
             lyrics_text,
             font_combo,
             transition_preset,
+            look_preset,
+            theme_preset,
             qwen_semantics_enabled,
             draft_mode_enabled,
             youtube_input,
@@ -1868,6 +1961,22 @@ def create_ui() -> gr.Blocks:
             sync_sources,
         ]
         _shared_outputs = [video_output, status_output, session_state, download_btn]
+
+        # Selecting a theme fills the font / look / transition / effect pickers
+        # with that theme's bundled defaults. 'None' is a no-op.
+        theme_preset.change(
+            fn=apply_theme,
+            inputs=[
+                theme_preset, look_preset,
+                effects_enabled, vignette, color_boost, gradient_overlay,
+                vignette_strength, color_boost_amount,
+            ],
+            outputs=[
+                theme_preset, font_combo, look_preset, transition_preset,
+                effects_enabled, vignette, color_boost, gradient_overlay,
+                vignette_strength, color_boost_amount,
+            ],
+        )
 
         process_btn.click(
             fn=process_video,

@@ -320,8 +320,10 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
 
         base_mv = p.margin_v if is_primary else s.margin_v
         align, px, py = _band_anchor(band, video_width, video_height, base_mv)
+        style_obj = p if is_primary else s
         anim_text = _apply_ass_animation(
             text, combo.animation, dur, fps, alignment=align, x=px, y=py,
+            primary_color=style_obj.primary_color,
         )
 
         events += f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},{style},,0,0,0,,{anim_text}\n"
@@ -365,17 +367,26 @@ def _font_name(font_file: str) -> str:
     return name
 
 
+# Bright gold used as the karaoke highlight; base text keeps the style colour.
+_KARAOKE_HIGHLIGHT = "&H0000D4D4"
+
+
 def _apply_ass_animation(text: str, animation: str, duration: float, fps: float,
-                         alignment: int = 2, x: int = 0, y: int = 0) -> str:
+                         alignment: int = 2, x: int = 0, y: int = 0,
+                         primary_color: str = "&H00FFFFFF") -> str:
     """Apply ASS animation tags to text based on the animation type.
 
     ``alignment``/``x``/``y`` position the line at a chosen on-screen band so
     captions can move across the frame. The alignment override is emitted on
     every line so placement is independent of the base style.
+
+    ``primary_color`` is the style colour, used as the un-highlighted base for
+    word-level karaoke.
     """
     escaped = _escape_ass_text(text)
     half_dur = max(0.2, duration * 0.15)  # fade duration
     fade_ms = int(half_dur * 1000)
+    dur_ms = max(200, int(duration * 1000))
     pos = f"\\an{alignment}\\pos({x},{y})"
 
     if animation == "slide_up":
@@ -384,6 +395,30 @@ def _apply_ass_animation(text: str, animation: str, duration: float, fps: float,
         return f"{{{pos}\\move({x - 100},{y},{x},{y},{fade_ms})\\fad({fade_ms},{fade_ms})}}{escaped}"
     if animation == "pop":
         return f"{{{pos}\\fscx0\\fscy0\\t(0,{fade_ms},\\fscx100\\fscy100)\\fad({fade_ms},{fade_ms})}}{escaped}"
+    if animation == "bounce":
+        # Scale up with overshoot, then settle — a springy entrance.
+        over = int(fade_ms * 0.6)
+        return (f"{{{pos}\\fscx50\\fscy50\\fad({fade_ms},{fade_ms})"
+                f"\\t(0,{over},\\fscx112\\fscy112)"
+                f"\\t({over},{fade_ms},\\fscx100\\fscy100)}}{escaped}")
+    if animation == "glow":
+        # Soft pulsing blur so the line visibly breathes.
+        return (f"{{{pos}\\blur2\\fad({fade_ms},{fade_ms})"
+                f"\\t(0,{dur_ms // 2},\\blur10)\\t({dur_ms // 2},{dur_ms},\\blur2)}}{escaped}")
+    if animation == "wave":
+        # Per-character rocking motion with a staggered phase (a wave).
+        chars = list(text)
+        if not chars:
+            return f"{{{pos}\\fad({fade_ms},{fade_ms})}}{escaped}"
+        step = max(30, dur_ms // (len(chars) * 3))
+        result = f"{{{pos}\\fad({fade_ms},{fade_ms})}}"
+        for i, ch in enumerate(chars):
+            esc_ch = _escape_ass_text(ch)
+            ang = -18 if i % 2 == 0 else 18
+            t0 = i * step
+            result += (f"{{\\frz{ang}\\t({t0},{t0 + step},"
+                       f"\\frz0\\fry{ang})\\t({t0 + step},{t0 + 2 * step},\\fry0)}}{esc_ch}")
+        return result
     if animation == "karaoke":
         chars = list(text)
         if not chars:
@@ -393,6 +428,23 @@ def _apply_ass_animation(text: str, animation: str, duration: float, fps: float,
         for ch in chars:
             esc_ch = _escape_ass_text(ch)
             result += f"{{\\k{int(char_dur / 10)}}}{esc_ch}"
+        return result
+    if animation == "karaoke_word":
+        # Word-level karaoke: one \k per word so the highlight lands on whole
+        # words rather than sweeping across characters. Sung text takes the
+        # highlight colour, un-sung text the style colour.
+        words = text.split()
+        if not words:
+            return f"{{{pos}\\fad({fade_ms},{fade_ms})}}{escaped}"
+        total_cs = max(1, int(duration * 100))
+        per = max(1, total_cs // len(words))
+        result = f"{{{pos}\\1c{_KARAOKE_HIGHLIGHT}\\2c{primary_color}}}"
+        for i, word in enumerate(words):
+            esc_word = _escape_ass_text(word)
+            k = per if i < len(words) - 1 else max(1, total_cs - per * (len(words) - 1))
+            result += f"{{\\k{k}}}{esc_word}"
+            if i < len(words) - 1:
+                result += " "
         return result
     if animation == "typewriter":
         chars = list(text)

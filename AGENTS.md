@@ -38,6 +38,25 @@ Health: `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:12000/`
 - **Multi-link input** (`youtube_source.parse_links` +
   `prepare_clips_from_sources`): downloads each link in turn and spreads a
   ~20-clip budget across successful sources.
+- **Cinematic looks** (`src/look_presets.py`): named colour grades compiled to
+  FFmpeg filters by `build_look_filters()` (colorbalance/eq/vibrance/curves/
+  noise/gblur+blend halation/lut3d). The grade is prepended to each clip's `-vf`
+  chain via `EffectsConfig.look_name` in `video_effects.build_clip_effect_filters`
+  — importantly *outside* the `cfg.enabled` guard, so picking a look applies it
+  even with per-clip effects off (same pattern as transitions). Filters are
+  probed with `post_ops.has_filter()` and skipped if unsupported. Optional
+  `.cube` LUTs live in `assets/luts/`. A few looks carry an off-by-default
+  `letterbox` field that pads bars (changes aspect — keep it opt-in).
+- **Theme presets** (`src/theme_presets.py`): bundle font combo + look +
+  transition preset + effect defaults. `gui.apply_theme` fills the pickers on
+  dropdown change; the resolved `theme_name`/`look_name` are threaded through
+  `process_video → _render_video_job → _process_video_impl → create_music_video`
+  and persisted in the job record + draft manifest. `scripts/render_final_from_draft.py`
+  rebuilds `EffectsConfig(look_name=...)` from the manifest so a replayed draft
+  keeps its grade.
+- **Lyric animations** (`src/lyrics_engine.py`): `_apply_ass_animation` also
+  supports `karaoke_word` (word-level `\k` highlight, takes `primary_color`) plus
+  `bounce`, `glow`, and `wave`. Font combos carry the `animation` string.
 
 - **Transitions vs. effects master toggle:** the "✨ Enable Visual
   Effects" checkbox only gates the *per-clip* effects (gradient, vignette,

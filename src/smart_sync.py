@@ -658,7 +658,11 @@ def smart_build_clip_effect_filters(
     from dataclasses import replace
     from video_effects import build_clip_effect_filters, EffectsConfig
 
-    if not base_cfg or not base_cfg.enabled:
+    if not base_cfg:
+        return [], None
+    # A cinematic look applies even when the effects master toggle is off, so
+    # only short-circuit when there is neither a look nor enabled effects.
+    if not base_cfg.enabled and not getattr(base_cfg, "look_name", ""):
         return [], None
 
     # Clone the config and apply overrides.

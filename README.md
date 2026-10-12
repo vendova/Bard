@@ -44,6 +44,9 @@ BeatSync Engine analyzes music rhythm, energy, sections, and source-video moment
 *   **📦 Portable Runtime:** Designed around bundled Python, FFmpeg, llama.cpp Vulkan, CuPy CTK, and local GGUF model files.
 *   **🌐 Local Web UI:** Launches a Gradio interface at `http://127.0.0.1:7860` by default.
 *   **🧹 Local Caches:** Reuses visual analysis data so repeated runs can be faster.
+*   **🎨 Cinematic Looks:** 16 FFmpeg-native colour grades (Teal & Orange, Bleach Bypass, Noir, Cyberpunk, Blockbuster…) prepended to every clip.
+*   **🌈 Theme Presets:** One dropdown that bundles a font combo + look + transition preset + effect defaults for a coherent style.
+*   **🔤 Kinetic Lyrics:** Word-level karaoke highlight plus bounce, glow, and wave animations for the burned-in captions.
 
 ---
 
@@ -353,6 +356,54 @@ Optional extras (nice-to-have, not required) are listed in
 > Honest limit: from a rendered file you can recover the writer software, the
 > encode/GOP structure, and the cut points — but **not** effect parameters,
 > source clips, or the editor's intent. Those live only in the project file.
+
+## 🎨 Cinematic Looks & Themes (`src/look_presets.py`, `src/theme_presets.py`)
+
+Two optional controls add a design layer on top of the cut timeline.
+
+### Cinematic Look (colour grade)
+
+A **Cinematic Look** dropdown in the Lyrics panel applies a named grade to
+every clip. Grades are pure FFmpeg filters — no OpenColorIO/ACES native deps —
+and are prepended to each clip's `-vf` chain, so they behave exactly like the
+existing per-clip effects:
+
+* `colorbalance` + `eq` + `vibrance` for the base grade
+* `curves` for the tone curve
+* `noise` for film grain
+* a self-contained `split`/`gblur`/`blend=screen` sub-graph for halation (light bloom)
+* an optional `lut3d` when a matching `.cube` is dropped in `assets/luts/`
+
+Each filter is probed with `post_ops.has_filter()` and silently skipped when the
+local FFmpeg build lacks it, so a grade never breaks a render. The table ships
+16 looks (Teal & Orange, Warm Vintage, Bleach Bypass, Noir, Golden Hour, Cool
+Cinema, Cyberpunk, Pastel Dream, Sepia, High Contrast, Faded Film, Infrared,
+Moonlight, Blockbuster, Neo Noir Night, and a neutral **None**).
+
+A few looks (e.g. *Blockbuster*, *Neo Noir Night*) include an optional
+**letterbox** field that pads cinematic bars top and bottom. It is off by
+default because it changes the frame aspect; only those looks enable it. If you
+want to drop the bars, zero the `letterbox` on those presets.
+
+### Theme Presets
+
+A **Theme** dropdown at the top of *Visual Effects & Transitions* binds a font
+combo + cinematic look + transition preset + a few effect defaults into one
+choice. Selecting a theme fills the other pickers; **None** leaves your manual
+picks alone and **🎲 Random** picks a new theme each render. The resolved theme
+name and look are persisted in the render job settings and the draft manifest,
+so a draft replayed via `scripts/render_final_from_draft.py` reproduces the same
+grade.
+
+### Kinetic lyrics
+
+`src/lyrics_engine.py` gained a word-level karaoke animation
+(`karaoke_word`) that highlights whole words in time with the line, plus three
+new kinetic entrances — `bounce` (overshoot scale), `glow` (pulsing blur), and
+`wave` (staggered per-character rock). They are assigned to font combos like any
+other animation.
+
+---
 
 ## Smoothing, Clipping & Timeline (`src/post_ops.py`)
 

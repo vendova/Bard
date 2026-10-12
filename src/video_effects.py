@@ -99,6 +99,12 @@ class EffectsConfig:
     transition_type: str = 'none'
     transition_duration: float = 0.35      # seconds
 
+    # --- Cinematic look (colour grade) ---
+    # A named LookPreset is prepended to each clip's -vf chain. Empty means no
+    # grade. Grading is independent of the per-clip effects master toggle so
+    # picking a look is enough to apply it.
+    look_name: str = ''
+
 
 def parse_effects_from_ui(
     enabled: bool,
@@ -121,6 +127,7 @@ def parse_effects_from_ui(
     color_boost_amount: float = 1.3,
     glitch_strength: float = 0.3,
     slow_motion_probability: float = 0.15,
+    look_name: str = '',
 ) -> EffectsConfig:
     """Build an EffectsConfig from raw Gradio UI values."""
     return EffectsConfig(
@@ -144,6 +151,7 @@ def parse_effects_from_ui(
         slow_motion_probability=float(slow_motion_probability),
         transition_type=str(transition_type) if transition_type else 'none',
         transition_duration=float(transition_duration),
+        look_name=str(look_name) if look_name else '',
     )
 
 
@@ -182,14 +190,28 @@ def build_clip_effect_filters(
     speed or a float > 1.0 when slow motion is applied (caller must extract
     speed_factor * duration of source content so the slowed clip fills the
     target timeline slot).
+
+    The cinematic look (color grade) is applied first, then the per-clip
+    effects. Grading is NOT gated by ``cfg.enabled`` — choosing a look applies
+    it on its own, mirroring how transitions work.
     """
-    if not cfg.enabled:
-        return [], None
+    w, h = target_size if target_size else (1920, 1080)
 
     filters: List[str] = []
     speed_factor: Optional[float] = None
+
+    # --- Cinematic look grade (independent of the effects master toggle) ---
+    if cfg.look_name:
+        try:
+            from look_presets import get_look_by_name, build_look_filters
+            filters.extend(build_look_filters(get_look_by_name(cfg.look_name), (w, h)))
+        except Exception:
+            pass
+
+    if not cfg.enabled:
+        return filters, None
+
     rng = random.Random(clip_index * 7919 + 42)
-    w, h = target_size if target_size else (1920, 1080)
 
     # --- Slow motion ---
     # The actual setpts filter is applied by extract_clip_segment_ffmpeg

@@ -441,6 +441,13 @@ LABEL_FONT_COMBO = "Font Style Combo (100 presets)"
 INFO_FONT_COMBO = "Select a font combo for the lyrics overlay. Each combo pairs primary + secondary fonts with animations"
 LABEL_TRANSITION_PRESET = "Transition Preset (100 combos)"
 INFO_TRANSITION_PRESET = "Select a named transition preset for Smart Sync per-cut transitions. 'Random' picks a new one each render"
+LABEL_LOOK = "Cinematic Look (colour grade)"
+INFO_LOOK = ("Applies a colour grade to every clip using FFmpeg-native filters "
+             "(colorbalance/eq/curves/grain/halation). 'None' leaves footage untouched; "
+             "'Random' picks a new look each render. An optional .cube LUT in assets/luts/ is used when present")
+LABEL_THEME = "Theme (font + look + transitions + effects)"
+INFO_THEME = ("One choice that bundles a font combo, cinematic look, transition preset and "
+              "effect defaults. 'None' keeps your manual picks. 'Random' picks a new theme each render")
 LABEL_LYRICS_SECTION = "🎤 Lyrics & Fonts"
 
 LABEL_GRADIENT_OVERLAY = "🌈 Gradient Color Overlay"

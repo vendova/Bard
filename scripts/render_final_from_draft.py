@@ -85,6 +85,12 @@ def main() -> int:
           f"FPS: {manifest.get('fps')}")
     print(f"   Output: {output}")
 
+    # Rebuild the effect config (carries the cinematic look) from the manifest
+    # so the final pass reproduces the draft's grading.
+    from video_effects import EffectsConfig
+    look_name = manifest.get("look_name") or ""
+    effects_config = EffectsConfig(look_name=look_name) if look_name else None
+
     result = create_music_video(
         audio_file=audio_file,
         video_files=video_files,
@@ -98,8 +104,10 @@ def main() -> int:
         use_gpu=False,
         gpu_encoder="none",
         fps=manifest.get("fps"),
+        effects_config=effects_config,
         smart_sync=bool(manifest.get("smart_sync", False)),
         transition_preset_name=manifest.get("transition_preset_name") or "",
+        theme_name=manifest.get("theme_name") or "",
         draft_manifest=manifest_path,
     )
     print(f"✅ Final video: {result}")
