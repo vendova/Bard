@@ -1317,8 +1317,6 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  draft_mode: bool = False,
                  youtube_url: str = "",
                  overlay_url: str = "",
-                 regenerate: bool = False,
-                 resume_job_id: str | None = None,
                  stabilize: bool = False,
                  stabilize_smoothing: float = 10,
                  interpolate: bool = False,
@@ -1327,7 +1325,14 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  remove_dead_space: bool = False,
                  export_timeline: bool = False,
                  sync_sources: bool = False,
+                 *,
+                 regenerate: bool = False,
+                 resume_job_id: str | None = None,
                  ) -> Iterator[StatusResult]:
+    # NOTE: regenerate/resume_job_id are keyword-only. They are never bound to
+    # Gradio inputs — the shared input list goes straight from overlay_url to
+    # stabilize — so keeping them positional would insert two extra slots and
+    # shift every bound value from overlay_url onward.
     status_queue: queue.Queue[str | None] = queue.Queue()
     result_queue: queue.Queue[StatusResult] = queue.Queue(maxsize=1)
     log_lines: list[str] = []
@@ -1350,10 +1355,10 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
             color_boost_amount, glitch_strength, slow_motion_probability,
             smart_sync, lyrics_text, font_combo_name, transition_preset_name,
             look_name, theme_name,
-            qwen_semantics, draft_mode, youtube_url, regenerate, resume_job_id,
-            overlay_url, stabilize, stabilize_smoothing, interpolate,
-            interpolate_fps, rife, remove_dead_space, export_timeline,
-            sync_sources,
+            qwen_semantics, draft_mode, youtube_url, overlay_url,
+            stabilize, stabilize_smoothing, interpolate, interpolate_fps,
+            rife, remove_dead_space, export_timeline, sync_sources,
+            regenerate=regenerate, resume_job_id=resume_job_id,
         )
     finally:
         os.environ.pop("BEATSYNC_DRAFT", None)
@@ -1392,8 +1397,6 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                  qwen_semantics: bool = True,
                  draft_mode: bool = False,
                  youtube_url: str = "",
-                 regenerate: bool = False,
-                 resume_job_id: str | None = None,
                  overlay_url: str = "",
                  stabilize: bool = False,
                  stabilize_smoothing: float = 10,
@@ -1403,6 +1406,9 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                  remove_dead_space: bool = False,
                  export_timeline: bool = False,
                  sync_sources: bool = False,
+                 *,
+                 regenerate: bool = False,
+                 resume_job_id: str | None = None,
                  ) -> Iterator[StatusResult]:
     status_queue: queue.Queue[str | None] = queue.Queue()
     result_queue: queue.Queue[StatusResult] = queue.Queue(maxsize=1)

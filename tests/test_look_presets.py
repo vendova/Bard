@@ -99,6 +99,35 @@ def test_theme_helpers():
     assert tp.get_random_theme().name != "None"
 
 
+def test_gradio_binding_matches_positional_args():
+    """Gradio binds inputs positionally; a mismatch silently shifts arguments.
+
+    process_video / regenerate_video must expose exactly as many positional
+    parameters as they have bound inputs (regenerate/resume_job_id stay
+    keyword-only because they are not bound to any UI control).
+    """
+    import inspect
+    gui = pytest.importorskip("gui")
+    app = gui.create_ui()
+    # The two render buttons carry the shared inputs; the other deps are
+    # theme change (10), load (0), forensics (2), etc.
+    input_counts = sorted(
+        len(d.get("inputs", [])) for d in app.config["dependencies"]
+        if d.get("inputs")
+    )
+    n_shared = max(input_counts)
+    for fn in (gui.process_video, gui.regenerate_video):
+        sig = inspect.signature(fn)
+        pos = [p for p in sig.parameters.values()
+               if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+        assert len(pos) == n_shared, (
+            f"{fn.__name__}: {len(pos)} positional params vs {n_shared} bound inputs")
+        # Unbound control-flow params must be keyword-only.
+        for name in ("regenerate", "resume_job_id"):
+            if name in sig.parameters:
+                assert sig.parameters[name].kind == sig.parameters[name].KEYWORD_ONLY
+
+
 def test_apply_theme_fills_pickers():
     gui = pytest.importorskip("gui")
     # 'None' is a no-op: every output is an empty gr.update().
