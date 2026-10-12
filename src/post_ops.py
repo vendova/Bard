@@ -240,6 +240,41 @@ def active_segments(duration: float, silences: Sequence[Silence],
     return segments
 
 
+def has_audio_stream(path: str) -> bool:
+    res = _run([FFPROBE, "-v", "error", "-select_streams", "a",
+                "-show_entries", "stream=index", "-of", "csv=p=0", path], timeout=30)
+    return bool((res.stdout or "").strip())
+
+
+def trim_to_active_segments(src: str, dst: str,
+                            segments: Sequence[Tuple[float, float]],
+                            *, quality: str = "draft", timeout: int = 7200) -> bool:
+    """Write a copy of *src* containing only the given active intervals.
+
+    Keeps video and audio in sync by trimming both streams per segment and
+    concatenating them. Returns False (without raising) if the source has no
+    usable audio or the graph fails, so callers can fall back to the original.
+    """
+    if not segments:
+        return False
+    if not has_audio_stream(src):
+        return False
+
+    parts = []
+    concat_inputs = []
+    for i, (a, b) in enumerate(segments):
+        dur = max(0.01, b - a)
+        parts.append(f"[0:v]trim=start={a:.4f}:duration={dur:.4f},setpts=PTS-STARTPTS[v{i}]")
+        parts.append(f"[0:a]atrim=start={a:.4f}:duration={dur:.4f},asetpts=PTS-STARTPTS[a{i}]")
+        concat_inputs.append(f"[v{i}][a{i}]")
+    graph = (";".join(parts) + ";" + "".join(concat_inputs)
+             + f"concat=n={len(segments)}:v=1:a=1[outv][outa]")
+    res = _run([FFMPEG, "-y", "-hide_banner", "-loglevel", "error", "-i", src,
+                "-filter_complex", graph, "-map", "[outv]", "-map", "[outa]",
+                *_enc_args(quality), "-c:a", "aac", dst], timeout=timeout)
+    return res.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 0
+
+
 # ---------------------------------------------------------------------------
 # 3. Syncing (audio cross-correlation)
 # ---------------------------------------------------------------------------
@@ -466,7 +501,10 @@ def edits_from_plan(planned: Sequence[Dict], *, fps: float = 30.0,
     for item in planned:
         src = item.get("source_file") or item.get("path") or item.get("video_file") or ""
         start = float(item.get("start_time", item.get("start", 0.0)) or 0.0)
-        dur = float(item.get("duration", 0.0) or 0.0)
+        dur = item.get("final_duration", item.get("duration"))
+        if dur is None:
+            dur = item.get("source_duration", 0.0)
+        dur = float(dur or 0.0)
         if dur <= 0 and "end_time" in item:
             dur = float(item["end_time"]) - start
         rec_in = float(item.get("record_start", rec) or rec)
