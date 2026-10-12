@@ -367,6 +367,48 @@ INFO_DRAFT_MODE = (
 )
 
 LABEL_FORENSICS_SECTION = "🔬 Forensics — How Was This Video Made?"
+
+# --- Post-processing (smoothing / clipping / sync / interchange) ------------
+LABEL_SMOOTH_SECTION = "🎚️ Smoothing, Clipping & Timeline"
+INFO_SMOOTH_SECTION = (
+    "Optional post-processing applied after the edit is built. All smoothing is "
+    "FFmpeg-native (CPU) and off by default."
+)
+LABEL_STABILIZE = "📷 Stabilize footage (vid.stab)"
+INFO_STABILIZE = (
+    "Two-pass vid.stab stabilization removes handheld shake. Requires the "
+    "vid.stab filters in your FFmpeg build (bundled with most distro builds)."
+)
+LABEL_STABILIZE_SMOOTHING = "Stabilization smoothing (frames)"
+INFO_STABILIZE_SMOOTHING = "Higher = smoother but more cropping. 5–30 is typical."
+LABEL_INTERPOLATE = "🎞️ Smooth frame rate (interpolation)"
+INFO_INTERPOLATE = (
+    "Motion-compensated minterpolate doubles the output frame rate for buttery "
+    "motion. Slower to encode; CPU-only builds use FFmpeg's minterpolate."
+)
+LABEL_INTERPOLATE_FPS = "Target FPS (0 = auto double)"
+INFO_INTERPOLATE_FPS = "Leave 0 to double the source fps (e.g. 30 → 60)."
+LABEL_RIFE = "🧠 Use neural RIFE backend"
+INFO_RIFE = (
+    "Only takes effect when PyTorch and a Practical-RIFE checkout "
+    "(BEATSYNC_RIFE_PATH) are present; otherwise the FFmpeg backend is used."
+)
+LABEL_REMOVE_DEAD_SPACE = "🔇 Skip silence/dead space in source clips"
+INFO_REMOVE_DEAD_SPACE = (
+    "Detects silent stretches in the source videos (FFmpeg silencedetect) and "
+    "avoids sampling clips from them, so cuts land on the live parts."
+)
+LABEL_EXPORT_TIMELINE = "🧾 Export timeline (EDL + cut-list + OTIO)"
+INFO_EXPORT_TIMELINE = (
+    "Writes the edit decision list next to the draft manifest: a CMX3600 .edl "
+    "(opens in Premiere/Resolve/FCP), a .cutlist.json, and an .otio when "
+    "OpenTimelineIO is installed."
+)
+LABEL_SYNC_SOURCES = "🎯 Cross-correlate & align multiple sources"
+INFO_SYNC_SOURCES = (
+    "Estimates the audio offset between uploaded clips (multicam) and groups "
+    "them by take so the edit can cut between cameras in sync."
+)
 INFO_FORENSICS_SECTION = (
     "Analyse a finished video: which software wrote it (ftyp brand + encoder "
     "metadata), the GOP/keyframe structure and re-encode/splice traces, and the "

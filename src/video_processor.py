@@ -532,6 +532,10 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                       transition_preset_name: str = "",
                       job_id: str | None = None,
                       draft_manifest: str | None = None,
+                      export_timeline: bool = False,
+                      timeline_dir: str | None = None,
+                      scene_cuts_by_file: Dict | None = None,
+                      sync_offsets: Dict | None = None,
                       ) -> str:
     """
     Creates a music video with video clips cut to detected beats.
@@ -742,7 +746,11 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         _ss._stable_rng = _seeded_stable_rng
 
         planned_clip_sequence, smart_transitions_list, smart_effect_overrides = \
-            build_smart_sync_plan(profiles, candidates, video_files, beat_info)
+            build_smart_sync_plan(
+                profiles, candidates, video_files, beat_info,
+                scene_cuts_by_file=scene_cuts_by_file,
+                sync_offsets=sync_offsets,
+            )
 
         # Restore original
         _ss._stable_rng = _orig_stable_rng
@@ -807,6 +815,35 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             print(f"   AI-tagged source moments used: {plan_summary.get('ai_tagged', 0)}")
         else:
             print("🎲 Visual planner fallback: source moments will use legacy random sampling")
+
+    # ── Interchange: export the edit decision list ──────────────────────
+    # Emit the recovered/planned timeline so the same edit can be opened in an
+    # NLE (EDL), inspected programmatically (JSON), or round-tripped
+    # (OpenTimelineIO). OTIO is optional and skipped silently if absent.
+    if export_timeline and planned_clip_sequence:
+        try:
+            from post_ops import (edits_from_plan, write_edl,
+                                  write_cutlist_json, write_otio)
+            _tl_dir = timeline_dir or session_temp_dir
+            os.makedirs(_tl_dir, exist_ok=True)
+            _edits = edits_from_plan(planned_clip_sequence, fps=fps)
+            _stamp = time.strftime("%Y%m%d_%H%M%S")
+            _edl = os.path.join(_tl_dir, f"beatsync_{_stamp}.edl")
+            _json = os.path.join(_tl_dir, f"beatsync_{_stamp}.cutlist.json")
+            write_edl(_edits, _edl, fps=fps)
+            write_cutlist_json(_edits, _json, fps=fps,
+                               meta={"smart_sync": bool(smart_sync),
+                                     "seed": variation_seed})
+            print(f"🎞️  Timeline exported: {_edl}")
+            print(f"🎞️  Cut list exported: {_json}")
+            try:
+                _otio = os.path.join(_tl_dir, f"beatsync_{_stamp}.otio")
+                write_otio(_edits, _otio, fps=fps)
+                print(f"🎞️  OTIO timeline exported: {_otio}")
+            except Exception as _otio_err:
+                print(f"   (OTIO export skipped: {_otio_err})")
+        except Exception as _tl_err:
+            print(f"   ⚠️  Timeline export skipped: {_tl_err}")
 
     # Draft pass: capture the full edit decision list so a later final pass can
     # replay it exactly at full quality (identical seed, cuts and transitions).

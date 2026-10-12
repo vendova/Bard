@@ -122,6 +122,23 @@ def test_active_segments_no_silence():
     assert segs == [(0.0, 10.0)]
 
 
+@requires_ffmpeg
+def test_trim_to_active_segments_shortens_video(tone_with_gap, tmp_path):
+    # A video whose audio has a 2s silent gap should shrink when trimmed.
+    import subprocess as sp
+    vid = tmp_path / "withgap.mp4"
+    sp.run([FFMPEG, "-y", "-v", "error", "-f", "lavfi",
+            "-i", "testsrc=size=160x120:rate=25:duration=6",
+            "-i", tone_with_gap, "-shortest",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(vid)], check=True)
+    sils = po.detect_silences(str(vid), noise_db=-35, min_duration=0.4)
+    dur = po.probe_duration(str(vid))
+    segs = po.active_segments(dur, sils)
+    out = tmp_path / "trimmed.mp4"
+    assert po.trim_to_active_segments(str(vid), str(out), segs)
+    assert po.probe_duration(str(out)) < dur - 1.0
+
+
 # --- Syncing -------------------------------------------------------------
 
 @requires_ffmpeg

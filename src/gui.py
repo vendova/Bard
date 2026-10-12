@@ -660,7 +660,15 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        qwen_semantics: bool = True,
                        youtube_url: str = "",
                        overlay_url: str = "",
-                       job_id: str | None = None) -> StatusResult:
+                       job_id: str | None = None,
+                       stabilize: bool = False,
+                       stabilize_smoothing: float = 10,
+                       interpolate: bool = False,
+                       interpolate_fps: float = 0,
+                       rife: bool = False,
+                       remove_dead_space: bool = False,
+                       export_timeline: bool = False,
+                       sync_sources: bool = False) -> StatusResult:
     total_started = time.perf_counter()
     try:
         parallel_workers = PARALLEL_WORKERS
@@ -768,6 +776,73 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
              return None, f"❌ Error: Audio file is missing or inaccessible.", session_state, gr.update(visible=False)
         if not local_video_paths or not all(p and os.path.exists(p) for p in local_video_paths):
              return None, f"❌ Error: Video files are missing or inaccessible.", session_state, gr.update(visible=False)
+
+        # ── Clipping: skip silence/dead space in source clips ──────────
+        # Trim each source to its loud/active intervals up front, so both the
+        # sampler and the final cut favour live parts. Frame-accurate cuts are
+        # preserved because the planner samples within the trimmed file.
+        if remove_dead_space:
+            try:
+                from post_ops import (detect_silences, active_segments,
+                                      trim_to_active_segments, has_audio_stream)
+                _trimmed_paths = []
+                for _vp in local_video_paths:
+                    try:
+                        _dur = get_video_duration(_vp)
+                        _sils = detect_silences(_vp, noise_db=-32.0, min_duration=0.5)
+                        _segs = active_segments(_dur, _sils)
+                        _out = os.path.join(session_dir, "despaced_" + os.path.basename(_vp))
+                        if (has_audio_stream(_vp) and 0 < len(_segs) and
+                                trim_to_active_segments(_vp, _out, _segs, quality="draft")):
+                            _trimmed_paths.append(_out)
+                            console_logger.line(
+                                f"🔇 {os.path.basename(_vp)}: kept "
+                                f"{sum(b - a for a, b in _segs):.1f}s of {_dur:.1f}s "
+                                f"({len(_segs)} active segment(s))"
+                            )
+                        else:
+                            _trimmed_paths.append(_vp)
+                    except Exception as _cl_err:
+                        console_logger.line(f"   (dead-space trim skipped for {os.path.basename(_vp)}: {_cl_err})")
+                        _trimmed_paths.append(_vp)
+                if _trimmed_paths:
+                    local_video_paths = _trimmed_paths
+            except Exception as _clip_err:
+                console_logger.line(f"⚠️  Dead-space removal skipped: {_clip_err}")
+
+        # ── Syncing: cross-correlate sources into camera groups ────────
+        _scene_cuts_by_file = {}
+        _sync_offsets = {}
+        if sync_sources and len(local_video_paths) >= 2:
+            try:
+                from post_ops import estimate_offset
+                _ref = local_video_paths[0]
+                for _vp in local_video_paths[1:]:
+                    try:
+                        _sync_offsets[_vp] = estimate_offset(_ref, _vp, max_lag=5.0)
+                    except Exception:
+                        pass
+                console_logger.line(
+                    f"🎯 Source sync: aligned {len(_sync_offsets)} clip(s) to the first "
+                    f"(offsets: {[round(v, 2) for v in _sync_offsets.values()]})"
+                )
+            except Exception as _sync_err:
+                console_logger.line(f"⚠️  Source sync skipped: {_sync_err}")
+
+        # Snap smart-sync clip starts to shot boundaries when Smart Sync is on.
+        if smart_sync and local_video_paths:
+            try:
+                from ffmpeg_processing import detect_video_scene_changes as _detect_scenes
+                for _vp in local_video_paths:
+                    try:
+                        _scene_cuts_by_file[_vp] = _detect_scenes(_vp, use_gpu=GPU_AVAILABLE)
+                    except Exception:
+                        _scene_cuts_by_file[_vp] = []
+                _n = sum(len(v) for v in _scene_cuts_by_file.values())
+                if _n:
+                    console_logger.line(f"🎬 Scene-aware snapping: {_n} shot boundaries indexed")
+            except Exception as _scene_err:
+                console_logger.line(f"⚠️  Scene snapping skipped: {_scene_err}")
         
         # Set GPU mode
         use_gpu = GPU_AVAILABLE
@@ -874,6 +949,10 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             smart_sync=smart_sync,
             transition_preset_name=transition_preset_name,
             job_id=job_id,
+            export_timeline=export_timeline,
+            timeline_dir=session_dir,
+            scene_cuts_by_file=_scene_cuts_by_file or None,
+            sync_offsets=_sync_offsets or None,
         )
 
         # ── Lyrics overlay ─────────────────────────────────────────────
@@ -1065,6 +1144,48 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                 )
             except Exception as web_err:
                 console_logger.line(f"⚠️  Web optimisation skipped: {web_err}")
+
+        # ── Post-processing: smoothing (stabilize / interpolate) ───────
+        # Applied last (after the web pass) so the served file is the final
+        # one. Both stages are optional and FFmpeg-native; failures are
+        # non-fatal and keep the un-smoothed output.
+        if stabilize or interpolate:
+            try:
+                from post_ops import PostOps, postprocess, rife_available
+                _cfg = PostOps(
+                    stabilize=bool(stabilize),
+                    stabilization_smoothing=int(stabilize_smoothing),
+                    interpolate=bool(interpolate),
+                    interpolate_fps=(float(interpolate_fps) or None),
+                    interpolate_backend='rife' if (rife and rife_available()) else 'minterpolate',
+                )
+                if rife and not rife_available():
+                    console_logger.line("⚠️  RIFE backend unavailable (no PyTorch/checkout); using FFmpeg minterpolate")
+                _stages = []
+                if _cfg.stabilize:
+                    _stages.append("stabilize")
+                if _cfg.interpolate:
+                    _stages.append(f"interpolate→{_cfg.interpolate_backend}")
+                _smooth_name = f"{name}_{timestamp}_smooth.mp4"
+                _smooth_path = os.path.join(session_dir, _smooth_name)
+                console_logger.line(f"🎚️  Post-processing: {' + '.join(_stages)} (this can take a while)")
+                postprocess(preview_path, _smooth_path, _cfg)
+                if os.path.exists(_smooth_path) and os.path.getsize(_smooth_path) > 1000:
+                    try:
+                        os.remove(output_path)
+                    except OSError:
+                        pass
+                    final_smooth = os.path.join(output_folder, _smooth_name)
+                    shutil.move(_smooth_path, final_smooth)
+                    preview_path = final_smooth
+                    output_path = final_smooth
+                    filename = _smooth_name
+                    console_logger.line(f"✓ Post-processing applied: {filename}")
+                else:
+                    console_logger.line("⚠️  Post-processing produced no output; keeping original")
+            except Exception as post_err:
+                console_logger.line(f"⚠️  Post-processing skipped: {post_err}")
+
         _stage6_summary(console_logger, beat_info)
 
         # Generate status message based on mode
@@ -1154,6 +1275,14 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  overlay_url: str = "",
                  regenerate: bool = False,
                  resume_job_id: str | None = None,
+                 stabilize: bool = False,
+                 stabilize_smoothing: float = 10,
+                 interpolate: bool = False,
+                 interpolate_fps: float = 0,
+                 rife: bool = False,
+                 remove_dead_space: bool = False,
+                 export_timeline: bool = False,
+                 sync_sources: bool = False,
                  ) -> Iterator[StatusResult]:
     status_queue: queue.Queue[str | None] = queue.Queue()
     result_queue: queue.Queue[StatusResult] = queue.Queue(maxsize=1)
@@ -1177,7 +1306,9 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
             color_boost_amount, glitch_strength, slow_motion_probability,
             smart_sync, lyrics_text, font_combo_name, transition_preset_name,
             qwen_semantics, draft_mode, youtube_url, regenerate, resume_job_id,
-            overlay_url,
+            overlay_url, stabilize, stabilize_smoothing, interpolate,
+            interpolate_fps, rife, remove_dead_space, export_timeline,
+            sync_sources,
         )
     finally:
         os.environ.pop("BEATSYNC_DRAFT", None)
@@ -1217,6 +1348,14 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                  regenerate: bool = False,
                  resume_job_id: str | None = None,
                  overlay_url: str = "",
+                 stabilize: bool = False,
+                 stabilize_smoothing: float = 10,
+                 interpolate: bool = False,
+                 interpolate_fps: float = 0,
+                 rife: bool = False,
+                 remove_dead_space: bool = False,
+                 export_timeline: bool = False,
+                 sync_sources: bool = False,
                  ) -> Iterator[StatusResult]:
     status_queue: queue.Queue[str | None] = queue.Queue()
     result_queue: queue.Queue[StatusResult] = queue.Queue(maxsize=1)
@@ -1335,6 +1474,14 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                     youtube_url=youtube_url,
                     overlay_url=overlay_url,
                     job_id=job_id,
+                    stabilize=stabilize,
+                    stabilize_smoothing=stabilize_smoothing,
+                    interpolate=interpolate,
+                    interpolate_fps=interpolate_fps,
+                    rife=rife,
+                    remove_dead_space=remove_dead_space,
+                    export_timeline=export_timeline,
+                    sync_sources=sync_sources,
                 )
         except Exception as e:
             console_logger.line(f"Error: {e}")
@@ -1408,6 +1555,14 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
                       draft_mode: bool = False,
                       youtube_url: str = "",
                       overlay_url: str = "",
+                      stabilize: bool = False,
+                      stabilize_smoothing: float = 10,
+                      interpolate: bool = False,
+                      interpolate_fps: float = 0,
+                      rife: bool = False,
+                      remove_dead_space: bool = False,
+                      export_timeline: bool = False,
+                      sync_sources: bool = False,
                       ) -> Iterator[StatusResult]:
     """Re-render with updated settings, reusing cached beat analysis.
 
@@ -1430,6 +1585,10 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
             draft_mode=draft_mode, youtube_url=youtube_url,
             overlay_url=overlay_url,
             regenerate=False, resume_job_id=None,
+            stabilize=stabilize, stabilize_smoothing=stabilize_smoothing,
+            interpolate=interpolate, interpolate_fps=interpolate_fps, rife=rife,
+            remove_dead_space=remove_dead_space,
+            export_timeline=export_timeline, sync_sources=sync_sources,
         )
         return
 
@@ -1449,6 +1608,10 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
         draft_mode=draft_mode, youtube_url=youtube_url,
         overlay_url=overlay_url,
         regenerate=True, resume_job_id=None,
+        stabilize=stabilize, stabilize_smoothing=stabilize_smoothing,
+        interpolate=interpolate, interpolate_fps=interpolate_fps, rife=rife,
+        remove_dead_space=remove_dead_space,
+        export_timeline=export_timeline, sync_sources=sync_sources,
     )
 
 
@@ -1591,6 +1754,20 @@ def create_ui() -> gr.Blocks:
                             glitch_strength = gr.Slider(0.05, 1.0, value=0.3, step=0.05, label=LABEL_GLITCH_STRENGTH)
                         slow_motion_probability = gr.Slider(0.0, 1.0, value=0.15, step=0.05, label=LABEL_SLOW_MOTION_PROBABILITY)
 
+                with gr.Accordion(LABEL_SMOOTH_SECTION, open=False):
+                    gr.Markdown(INFO_SMOOTH_SECTION)
+                    with gr.Row():
+                        stabilize_enabled = gr.Checkbox(value=False, label=LABEL_STABILIZE, info=INFO_STABILIZE)
+                        remove_dead_space = gr.Checkbox(value=False, label=LABEL_REMOVE_DEAD_SPACE, info=INFO_REMOVE_DEAD_SPACE)
+                    with gr.Row():
+                        interpolate_enabled = gr.Checkbox(value=False, label=LABEL_INTERPOLATE, info=INFO_INTERPOLATE)
+                        interpolate_fps = gr.Number(value=0, precision=0, minimum=0, maximum=240, label=LABEL_INTERPOLATE_FPS, info=INFO_INTERPOLATE_FPS)
+                    with gr.Row():
+                        rife_enabled = gr.Checkbox(value=False, label=LABEL_RIFE, info=INFO_RIFE)
+                        export_timeline = gr.Checkbox(value=False, label=LABEL_EXPORT_TIMELINE, info=INFO_EXPORT_TIMELINE)
+                        sync_sources = gr.Checkbox(value=False, label=LABEL_SYNC_SOURCES, info=INFO_SYNC_SOURCES)
+                    stabilize_smoothing = gr.Slider(2, 40, value=10, step=1, label=LABEL_STABILIZE_SMOOTHING, info=INFO_STABILIZE_SMOOTHING)
+
                 with gr.Accordion(LABEL_LYRICS_SECTION, open=False):
                     lyrics_text = gr.Textbox(
                         label=LABEL_LYRICS_TEXT,
@@ -1681,6 +1858,14 @@ def create_ui() -> gr.Blocks:
             draft_mode_enabled,
             youtube_input,
             overlay_link,
+            stabilize_enabled,
+            stabilize_smoothing,
+            interpolate_enabled,
+            interpolate_fps,
+            rife_enabled,
+            remove_dead_space,
+            export_timeline,
+            sync_sources,
         ]
         _shared_outputs = [video_output, status_output, session_state, download_btn]
 
