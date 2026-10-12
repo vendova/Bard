@@ -354,6 +354,42 @@ Optional extras (nice-to-have, not required) are listed in
 > encode/GOP structure, and the cut points — but **not** effect parameters,
 > source clips, or the editor's intent. Those live only in the project file.
 
+## Smoothing, Clipping & Timeline (`src/post_ops.py`)
+
+An optional **🎚️ Smoothing, Clipping & Timeline** panel adds a few
+render-path conveniences. Everything here is FFmpeg-native (CPU) and off by
+default; failures never fail a render.
+
+* **Smoothing**
+  * *Stabilize* — two-pass `vid.stab` (`vidstabdetect` → `vidstabtransform`)
+    removes handheld shake.
+  * *Smooth frame rate* — `minterpolate` motion-compensated interpolation
+    (e.g. 30 → 60 fps). A neural **RIFE** backend is supported but only runs
+    when PyTorch **and** a Practical-RIFE checkout (`BEATSYNC_RIFE_PATH`) are
+    present; otherwise the FFmpeg backend is used.
+* **Clipping**
+  * *Skip dead space* — `silencedetect` finds silent stretches in the source
+    clips and each source is trimmed to its live segments before editing.
+* **Syncing**
+  * *Cross-correlate sources* — estimates the audio offset between uploaded
+    clips (multicam) and groups them by take so Smart Sync can cut between
+    cameras in sync. Smart Sync also snaps clip starts to shot boundaries so a
+    clip never opens mid-shot.
+* **Interchange**
+  * *Export timeline* — writes the edit decision list next to the draft
+    manifest: a CMX3600 `.edl` (opens in Premiere/Resolve/FCP), a
+    `.cutlist.json`, and an `.otio` when `opentimelineio` is installed.
+
+CLI helpers:
+
+```bash
+PYTHONPATH=src python post_ops.py --filters        # which ffmpeg filters are available
+PYTHONPATH=src python post_ops.py --silences in.mp4
+```
+
+Optional Python extra: `pip install -r requirements-postops.txt` (OpenTimelineIO
+only; EDL/JSON export works without it).
+
 ---
 
 *If BeatSync Engine saves you editing time, give the repository a star! ⭐*

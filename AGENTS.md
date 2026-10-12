@@ -103,6 +103,29 @@ System tools (`exiftool`, `mediainfo`) and the `scenedetect` Python extra
 
 Tests are in `tests/` (pytest, ffmpeg-generated fixtures via `conftest.py`).
 
+## Post-processing (`src/post_ops.py`)
+
+Optional, off-by-default render-path operations surfaced as the
+**🎚️ Smoothing, Clipping & Timeline** accordion:
+
+- **Smoothing** — `stabilize_video` (two-pass `vid.stab`), `interpolate_fps`
+  (`minterpolate`), and an isolated neural `interpolate_rife` that only runs
+  when torch + a Practical-RIFE checkout (`BEATSYNC_RIFE_PATH`) exist. Probe
+  filters with `has_filter()`; never assume a filter is present.
+- **Clipping** — `detect_silences` / `active_segments` / `trim_to_active_segments`
+  remove dead space from source clips before editing (keeps A/V in sync).
+- **Syncing** — `estimate_offset` cross-correlates two sources' RMS envelopes
+  (normalised overlap correlation; FFT magnitude is biased toward long overlaps,
+  so don't revert to raw FFT). `smart_sync.snap_to_scene_boundary` +
+  `assign_camera_groups` add scene-aligned starts and multicam awareness.
+- **Interchange** — `write_edl` / `write_cutlist_json` / `write_otio`.
+  OpenTimelineIO is optional (`requirements-postops.txt`); EDL/JSON always work.
+
+GUI wiring lives in `src/gui.py`: preprocessing (2a/3a) runs in
+`_process_video_impl` after source resolution; smoothing (1a/1b) runs right
+after the web-optimise pass; interchange (4) is requested via
+`create_music_video(export_timeline=True, timeline_dir=…)`.
+
 ## Conventions
 
 - Keep changes minimal; the render pipeline is CPU-only (libx264).

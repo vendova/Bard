@@ -1,0 +1,14 @@
+# Optional extras for BeatSync-Engine post-processing (src/post_ops.py).
+#
+# Everything in post_ops is FFmpeg-native and needs NO extra Python packages.
+# These are strictly optional upgrades:
+#
+#   opentimelineio — enables .otio timeline export (EDL + JSON exports work
+#                    without it). Install with:
+#                        pip install -r requirements-postops.txt
+#
+# Neural RIFE interpolation is NOT a pip extra: it requires PyTorch plus a
+# Practical-RIFE checkout pointed to by the BEATSYNC_RIFE_PATH env var, and is
+# off unless both are present. The FFmpeg `minterpolate` backend is the default.
+
+opentimelineio>=0.16
