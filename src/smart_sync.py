@@ -307,16 +307,25 @@ _TRANSITION_LANDMARK_IMPORTANCE = 0.8
 # Softening of the energy step when scoring importance (larger = more lenient).
 _ENERGY_DELTA_SCALE = 0.5
 
+# "Dip" transitions fade through a solid colour, which is visually heavy and
+# gets tiring if it repeats. Cap how often they may appear in a rolling window.
+_DIP_TRANSITIONS = {"fadeblack", "fadewhite"}
+_DIP_MAX_PER_WINDOW = 2
+_DIP_WINDOW_SECONDS = 20.0
+
 
 def transition_importance(
     profile: Dict,
     next_profile: Optional[Dict],
+    bar_anchor: bool = False,
+    phrase_anchor: bool = False,
 ) -> float:
     """Score how much a cut *deserves* a transition, from 0 (hard cut) to 1.
 
     A transition adds meaning only at a musical landmark: a big energy step, a
-    strong beat impact, a section change, or a drop entry. Ordinary cuts that
-    flow at a steady energy stay low and become hard cuts.
+    strong beat impact, a section change, a drop entry, or a bar/phrase anchor
+    in the beat grid. Ordinary cuts that flow at a steady energy stay low and
+    become hard cuts.
     """
     if next_profile is None:
         return 0.0
@@ -352,7 +361,25 @@ def transition_importance(
     if target == "flow" and next_target == "flow" and impact < 0.55:
         importance *= 0.5
 
+    # Beat-grid anchors: a phrase anchor (a musical "breath") is a natural place
+    # for a transition; a bar anchor is a good one. This is a bonus on top of the
+    # musical signals so anchored cuts win when otherwise similar.
+    if phrase_anchor:
+        importance += 0.16
+    elif bar_anchor:
+        importance += 0.08
+
     return _clamp(importance)
+
+
+def _min_transition_gap(avg_energy: float) -> float:
+    """Minimum spacing (seconds) between transitions for a given energy level.
+
+    Intense passages may cut more often; calm passages space transitions out so
+    they stay highlights. Cuts sit on beats, so this keeps transitions locked to
+    the music instead of firing on every boundary.
+    """
+    return float(_clamp(6.0 - 6.5 * avg_energy, 1.5, 6.0))
 
 
 def choose_transition_for_segment(
@@ -360,17 +387,23 @@ def choose_transition_for_segment(
     next_profile: Optional[Dict],
     index: int,
     prev_had_transition: bool = False,
+    allow_dip: bool = True,
+    bar_anchor: bool = False,
+    phrase_anchor: bool = False,
+    last_transition_time: float = -1e9,
 ) -> Optional[str]:
     """Return a transition type for the cut, or None to keep a hard cut.
 
     Combines :func:`transition_importance` (does this cut deserve a transition?)
-    with the contextual transition pools (which transition fits?). A ``cooldown``
-    keeps ordinary cuts from chaining transitions after a previous one.
+    with the contextual transition pools (which transition fits?). ``cooldown``
+    keeps ordinary cuts from chaining, ``allow_dip`` gates the heavy
+    fade-through-black/white transitions, and the last two arguments enforce a
+    beat-locked minimum gap between transitions.
     """
     if next_profile is None:
         return None
 
-    importance = transition_importance(profile, next_profile)
+    importance = transition_importance(profile, next_profile, bar_anchor, phrase_anchor)
     if importance < _TRANSITION_MIN_IMPORTANCE:
         return None
 
@@ -381,6 +414,14 @@ def choose_transition_for_segment(
     if prev_had_transition and not is_landmark:
         return None
 
+    # Beat-locked spacing: respect the energy-dependent minimum gap unless the
+    # cut is a genuine landmark (a drop or section change earns its moment).
+    cut_time = float(profile.get("end", 0.0))
+    avg_energy = (compute_segment_energy(profile)
+                  + compute_segment_energy(next_profile)) * 0.5
+    if not is_landmark and (cut_time - last_transition_time) < _min_transition_gap(avg_energy):
+        return None
+
     rng = _stable_rng(index, "transition", round(importance, 3))
 
     # Occasionally drop an ordinary would-be transition so the effect stays a
@@ -389,15 +430,20 @@ def choose_transition_for_segment(
     if not is_landmark and rng.random() < _TRANSITION_SKIP_RATE:
         return None
 
-    return _transition_type_for_context(profile, next_profile, rng)
+    return _transition_type_for_context(profile, next_profile, rng, allow_dip)
 
 
 def _transition_type_for_context(
     profile: Dict,
     next_profile: Dict,
     rng: random.Random,
+    allow_dip: bool = True,
 ) -> str:
-    """Pick the transition *type* that fits the musical context of a cut."""
+    """Pick the transition *type* that fits the musical context of a cut.
+
+    When ``allow_dip`` is False, dip transitions (fade through black/white) are
+    swapped for a non-dip alternative so they do not repeat too often.
+    """
     seg_energy = compute_segment_energy(profile)
     next_energy = compute_segment_energy(next_profile)
     energy_delta = next_energy - seg_energy
@@ -406,32 +452,42 @@ def _transition_type_for_context(
 
     # Section-specific overrides.
     if section_type == "intro":
-        return rng.choice(_TRANSITION_POOLS["intro"])
+        return _pick_from_pool(_TRANSITION_POOLS["intro"], rng, allow_dip)
     if section_type == "outro":
-        return rng.choice(_TRANSITION_POOLS["outro"])
+        return _pick_from_pool(_TRANSITION_POOLS["outro"], rng, allow_dip)
 
     # Big energy jump into a drop — dramatic transition.
     if next_profile.get("target") == "drop" and energy_delta > 0.15:
-        return rng.choice(_TRANSITION_POOLS["drop_hit"])
+        return _pick_from_pool(_TRANSITION_POOLS["drop_hit"], rng, allow_dip)
 
     # Buildup section — smooth transitions.
     if section_type in {"bridge", "hook"} or target == "build":
-        return rng.choice(_TRANSITION_POOLS["build_up"])
+        return _pick_from_pool(_TRANSITION_POOLS["build_up"], rng, allow_dip)
 
     # High energy both sides — energetic transitions.
     if seg_energy >= 0.65 and next_energy >= 0.65:
-        return rng.choice(_TRANSITION_POOLS["high_energy"])
+        return _pick_from_pool(_TRANSITION_POOLS["high_energy"], rng, allow_dip)
 
     # Big energy drop — calm after storm, use dissolve.
     if energy_delta < -0.20:
-        return rng.choice(_TRANSITION_POOLS["low_energy"])
+        return _pick_from_pool(_TRANSITION_POOLS["low_energy"], rng, allow_dip)
 
     # Low energy — soft transitions.
     if seg_energy <= 0.35 and next_energy <= 0.35:
-        return rng.choice(_TRANSITION_POOLS["low_energy"])
+        return _pick_from_pool(_TRANSITION_POOLS["low_energy"], rng, allow_dip)
 
     # Default — medium energy.
-    return rng.choice(_TRANSITION_POOLS["medium_energy"])
+    return _pick_from_pool(_TRANSITION_POOLS["medium_energy"], rng, allow_dip)
+
+
+def _pick_from_pool(pool: Sequence[str], rng: random.Random, allow_dip: bool) -> str:
+    """Choose a transition from *pool*, honouring the dip-transition budget."""
+    if allow_dip:
+        return rng.choice(list(pool))
+    non_dip = [t for t in pool if t not in _DIP_TRANSITIONS]
+    if not non_dip:
+        return rng.choice(list(pool))
+    return rng.choice(non_dip)
 
 
 def smart_transition_for_segment(
@@ -661,15 +717,7 @@ def build_smart_sync_plan(
 
     planned_clips = smart_assign_clips(profiles, candidates)
 
-    # Per-cut transitions. An empty string means "hard cut" — the cut is not a
-    # musical landmark, so no transition is spent on it.
-    transitions: List[str] = []
-    prev_had_transition = False
-    for i in range(len(profiles) - 1):
-        t_type = choose_transition_for_segment(
-            profiles[i], profiles[i + 1], i, prev_had_transition)
-        transitions.append(t_type or "")
-        prev_had_transition = bool(t_type)
+    transitions = _place_transitions(profiles, beat_info)
 
     # Per-clip effect overrides.
     effect_overrides: List[Dict[str, Any]] = []
@@ -682,6 +730,103 @@ def build_smart_sync_plan(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _place_transitions(profiles: List[Dict], beat_info: Dict | None) -> List[str]:
+    """Choose where transitions go, one entry per cut ("" means hard cut).
+
+    Cuts are scored by :func:`transition_importance` (energy jumps, drops,
+    section changes, beat anchors). The most deserving cuts are placed first,
+    then a beat-locked minimum gap — short in intense passages, wide in calm
+    ones — and a rolling cap on heavy dip transitions keep the effect from
+    spamming every boundary.
+    """
+    n = max(0, len(profiles) - 1)
+    if n == 0:
+        return []
+
+    bar_flags, phrase_flags = _beat_anchor_flags(profiles, beat_info)
+
+    cuts: List[Dict[str, Any]] = []
+    for i in range(n):
+        importance = transition_importance(
+            profiles[i], profiles[i + 1], bar_flags[i], phrase_flags[i])
+        if importance < _TRANSITION_MIN_IMPORTANCE:
+            continue
+        rng = _stable_rng(i, "transition", round(importance, 3))
+        # Keep genuine landmarks (drops, section changes, hard hits); thin out
+        # ordinary eligible cuts so the effect stays a highlight.
+        if importance < _TRANSITION_LANDMARK_IMPORTANCE and rng.random() < _TRANSITION_SKIP_RATE:
+            continue
+        energy = (compute_segment_energy(profiles[i])
+                  + compute_segment_energy(profiles[i + 1])) * 0.5
+        cuts.append({
+            "index": i,
+            "time": float(profiles[i].get("end", 0.0)),
+            "importance": importance,
+            "energy": energy,
+        })
+
+    # Greedy placement, best cut first. Every clip contributes a baseline of
+    # energy, so the average drives the minimum gap: busy passages transition
+    # more often than calm ones.
+    all_energy = [compute_segment_energy(p) for p in profiles] or [0.5]
+    base_gap = _min_transition_gap(float(np.mean(all_energy)))
+
+    transitions: List[str] = [""] * n
+    placed: List[Dict[str, Any]] = []
+    dips: List[float] = []
+    for cut in sorted(cuts, key=lambda c: c["importance"], reverse=True):
+        gap = max(1.0, base_gap * (0.6 if cut["importance"] >= _TRANSITION_LANDMARK_IMPORTANCE else 1.0))
+        if any(abs(cut["time"] - p["time"]) < gap for p in placed):
+            continue
+
+        cut_time = cut["time"]
+        allow_dip = sum(1 for t in dips if cut_time - t < _DIP_WINDOW_SECONDS) < _DIP_MAX_PER_WINDOW
+        rng = _stable_rng(cut["index"], "type", round(cut["importance"], 3))
+        t_type = _transition_type_for_context(
+            profiles[cut["index"]], profiles[cut["index"] + 1], rng, allow_dip)
+
+        transitions[cut["index"]] = t_type
+        placed.append(cut)
+        if t_type in _DIP_TRANSITIONS:
+            dips.append(cut_time)
+
+    return transitions
+
+
+def _beat_anchor_flags(
+    profiles: List[Dict], beat_info: Dict | None,
+) -> Tuple[List[bool], List[bool]]:
+    """Map each cut (the end of profile *i*) to the beat grid.
+
+    Returns two boolean lists (one entry per cut): whether the cut lands on a
+    bar anchor and on a phrase anchor. Transitions placed on these land with the
+    music. Empty/False when beat data is unavailable.
+    """
+    n = max(0, len(profiles) - 1)
+    bar_flags = [False] * n
+    phrase_flags = [False] * n
+    if not beat_info or n == 0:
+        return bar_flags, phrase_flags
+
+    times = np.asarray(beat_info.get("times", []), dtype=float)
+    rhythm = beat_info.get("rhythm_data") or {}
+    bar = np.asarray(rhythm.get("is_bar_anchor", []), dtype=bool)
+    phrase = np.asarray(rhythm.get("is_phrase_anchor", []), dtype=bool)
+    if times.size < 2 or bar.size != times.size or phrase.size != times.size:
+        return bar_flags, phrase_flags
+
+    half_beat = float(np.median(np.diff(times))) * 0.5
+    for i in range(n):
+        cut_time = float(profiles[i].get("end", 0.0))
+        j = int(np.searchsorted(times, cut_time))
+        candidates = [k for k in (j - 1, j) if 0 <= k < times.size]
+        nearest = min(candidates, key=lambda k: abs(times[k] - cut_time))
+        if abs(times[nearest] - cut_time) <= half_beat:
+            bar_flags[i] = bool(bar[nearest])
+            phrase_flags[i] = bool(phrase[nearest])
+    return bar_flags, phrase_flags
+
 
 def _clamp(value: Any, lo: float = 0.0, hi: float = 1.0, default: float = 0.0) -> float:
     try:

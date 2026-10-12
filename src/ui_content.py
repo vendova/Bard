@@ -350,7 +350,7 @@ LABEL_EFFECTS_ENABLED = "✨ Enable Visual Effects"
 INFO_EFFECTS_ENABLED = "Master toggle for the per-clip visual effects below (Transition Type applies on its own)"
 
 LABEL_SMART_SYNC = "🧠 Smart Sync (AI Energy Matching)"
-INFO_SMART_SYNC = "Matches clips to beat energy. Adds transitions only at musical highlights (energy jumps, drops, section changes) and hard-cuts the rest; a chosen Transition Type or Preset takes priority, and only the effects you enable are scaled"
+INFO_SMART_SYNC = "Matches clips to beat energy. Adds transitions only at musical highlights (energy jumps, drops, section changes, beat anchors), spaces them out so they never spam every cut, and hard-cuts the rest; fade-through-black/white is capped over time. A chosen Transition Type or Preset takes priority, and only the effects you enable are scaled"
 
 LABEL_QWEN_SEMANTICS = "🔮 Qwen Semantic Detection"
 INFO_QWEN_SEMANTICS = (

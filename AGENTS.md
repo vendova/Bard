@@ -46,6 +46,15 @@ Health: `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:12000/`
   `video_effects.py` must NOT require `cfg.enabled`, or selecting a
   transition without the master toggle silently falls through to the
   hard-cut concat branch in `video_processor.create_music_video`.
+- **Smart Sync transition budget** (`_place_transitions` in `smart_sync.py`):
+  Smart Sync never puts a transition on every cut. Cuts are scored by
+  `transition_importance` (energy jumps, drop entries, section changes, strong
+  hits, plus a bonus for beat-grid bar/phrase anchors); the best cuts are placed
+  first, then a beat-locked minimum gap — short in intense passages, wide in
+  calm ones (`_min_transition_gap`) — and a rolling cap on heavy dip
+  transitions (`fadeblack`/`fadewhite`, `_DIP_MAX_PER_WINDOW` per
+  `_DIP_WINDOW_SECONDS`) keep the effect a highlight. An empty string in the
+  transition list means hard cut.
 - **Smart Sync precedence** (`apply_smart_sync_preferences` in
   `video_processor.py`): Smart Sync alone picks a transition *only where a cut
   is a musical landmark* and hard-cuts the rest (see `transition_importance` /
