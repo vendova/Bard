@@ -294,28 +294,115 @@ _TRANSITION_POOLS: Dict[str, List[str]] = {
 }
 
 
-def smart_transition_for_segment(
+# A cut only earns a transition when it marks a real musical moment; ordinary
+# cuts stay as hard cuts so transitions do not fire on every single boundary.
+_TRANSITION_MIN_IMPORTANCE = 0.55
+
+# Fraction of ordinary eligible cuts that are randomly downgraded to hard cuts,
+# so the mix feels intentional instead of every highlight getting an effect.
+# Strong landmarks (drop entries, section changes, hard hits) are never skipped.
+_TRANSITION_SKIP_RATE = 0.2
+_TRANSITION_LANDMARK_IMPORTANCE = 0.8
+
+# Softening of the energy step when scoring importance (larger = more lenient).
+_ENERGY_DELTA_SCALE = 0.5
+
+
+def transition_importance(
     profile: Dict,
     next_profile: Optional[Dict],
-    index: int,
-) -> str:
-    """Pick a transition type for the cut between *profile* and *next_profile*.
+) -> float:
+    """Score how much a cut *deserves* a transition, from 0 (hard cut) to 1.
 
-    The choice depends on:
-    - Section type (intro/outro/drop/build)
-    - Energy delta between segments
-    - Beat impact strength
+    A transition adds meaning only at a musical landmark: a big energy step, a
+    strong beat impact, a section change, or a drop entry. Ordinary cuts that
+    flow at a steady energy stay low and become hard cuts.
     """
     if next_profile is None:
-        return "fade"
+        return 0.0
 
     seg_energy = compute_segment_energy(profile)
     next_energy = compute_segment_energy(next_profile)
-    energy_delta = next_energy - seg_energy
     impact = _clamp(profile.get("impact", 0.5), default=0.5)
     section_type = profile.get("section_type", "body")
+    next_section_type = next_profile.get("section_type", "body")
+    target = profile.get("target", "flow")
+    next_target = next_profile.get("target", "flow")
 
-    rng = _stable_rng(index, "transition", round(seg_energy, 3), round(next_energy, 3))
+    # Smoothstep-ish ramp for the energy step (0 below 0.05, 1 above 0.45).
+    energy_delta = abs(next_energy - seg_energy)
+    delta_score = _clamp((energy_delta - 0.05) / _ENERGY_DELTA_SCALE, default=0.0)
+    impact_score = _clamp((impact - 0.45) / 0.45, default=0.0)
+
+    section_change = 0.0
+    if next_section_type != section_type:
+        # A cut that leaves the intro or reaches the outro is always a landmark.
+        if section_type == "intro" or next_section_type == "outro":
+            section_change = 0.85
+        else:
+            section_change = 0.7
+
+    drop_entry = 0.0
+    if next_target == "drop" and next_target != target and next_energy >= 0.6:
+        drop_entry = 0.95
+
+    importance = max(delta_score, drop_entry, section_change, 0.9 * impact_score)
+
+    # Ordinary flow-to-flow cuts with no impact rarely need a transition.
+    if target == "flow" and next_target == "flow" and impact < 0.55:
+        importance *= 0.5
+
+    return _clamp(importance)
+
+
+def choose_transition_for_segment(
+    profile: Dict,
+    next_profile: Optional[Dict],
+    index: int,
+    prev_had_transition: bool = False,
+) -> Optional[str]:
+    """Return a transition type for the cut, or None to keep a hard cut.
+
+    Combines :func:`transition_importance` (does this cut deserve a transition?)
+    with the contextual transition pools (which transition fits?). A ``cooldown``
+    keeps ordinary cuts from chaining transitions after a previous one.
+    """
+    if next_profile is None:
+        return None
+
+    importance = transition_importance(profile, next_profile)
+    if importance < _TRANSITION_MIN_IMPORTANCE:
+        return None
+
+    is_landmark = importance >= _TRANSITION_LANDMARK_IMPORTANCE
+
+    # Cooldown: after a transition, only another landmark may follow directly,
+    # so transitions read as highlights instead of running back to back.
+    if prev_had_transition and not is_landmark:
+        return None
+
+    rng = _stable_rng(index, "transition", round(importance, 3))
+
+    # Occasionally drop an ordinary would-be transition so the effect stays a
+    # highlight. Landmark cuts (drop entries, section changes, hard hits) are
+    # always kept.
+    if not is_landmark and rng.random() < _TRANSITION_SKIP_RATE:
+        return None
+
+    return _transition_type_for_context(profile, next_profile, rng)
+
+
+def _transition_type_for_context(
+    profile: Dict,
+    next_profile: Dict,
+    rng: random.Random,
+) -> str:
+    """Pick the transition *type* that fits the musical context of a cut."""
+    seg_energy = compute_segment_energy(profile)
+    next_energy = compute_segment_energy(next_profile)
+    energy_delta = next_energy - seg_energy
+    section_type = profile.get("section_type", "body")
+    target = profile.get("target", "flow")
 
     # Section-specific overrides.
     if section_type == "intro":
@@ -328,7 +415,7 @@ def smart_transition_for_segment(
         return rng.choice(_TRANSITION_POOLS["drop_hit"])
 
     # Buildup section — smooth transitions.
-    if section_type in {"bridge", "hook"} or profile.get("target") == "build":
+    if section_type in {"bridge", "hook"} or target == "build":
         return rng.choice(_TRANSITION_POOLS["build_up"])
 
     # High energy both sides — energetic transitions.
@@ -345,6 +432,26 @@ def smart_transition_for_segment(
 
     # Default — medium energy.
     return rng.choice(_TRANSITION_POOLS["medium_energy"])
+
+
+def smart_transition_for_segment(
+    profile: Dict,
+    next_profile: Optional[Dict],
+    index: int,
+) -> str:
+    """Pick a transition type for the cut (always returns a type).
+
+    Kept for callers that want a definite transition; the adaptive planner uses
+    :func:`choose_transition_for_segment`, which may return ``None`` for a hard
+    cut.
+    """
+    if next_profile is None:
+        return "fade"
+
+    rng = _stable_rng(index, "transition-legacy",
+                      round(compute_segment_energy(profile), 3),
+                      round(compute_segment_energy(next_profile), 3))
+    return _transition_type_for_context(profile, next_profile, rng)
 
 
 def smart_transition_duration(seg_energy: float, next_energy: float, base_duration: float) -> float:
@@ -439,6 +546,46 @@ def smart_effect_overrides(profile: Dict, clip_index: int) -> Dict[str, Any]:
     return overrides
 
 
+def restrict_overrides_to_user_effects(
+    overrides: Dict[str, Any], base_cfg: Any,
+) -> Dict[str, Any]:
+    """Drop intensity overrides for effects the user did not turn on.
+
+    Smart Sync may compute intensity hints for every effect, but it must only
+    *scale* the effects the user explicitly enabled. Otherwise Smart Sync would
+    inject effects (vignette, color boost, flash, zoom punch, slow motion) that
+    the user never asked for. The master toggle itself is still required, so
+    this returns the overrides unchanged when the user enabled no effects.
+    """
+    if base_cfg is None:
+        return {}
+    if not getattr(base_cfg, "enabled", False):
+        # Master toggle off: Smart Sync contributes no effect overrides.
+        return {}
+    if not (base_cfg.vignette or base_cfg.color_boost or base_cfg.flash_on_beat
+            or base_cfg.zoom_punch or base_cfg.slow_motion):
+        # Smart Sync enabled on its own (no effects selected): let it drive the
+        # dynamic effects it is designed for. Everything is user-selected here.
+        return dict(overrides)
+
+    allowed: Dict[str, Any] = {}
+    if base_cfg.vignette and "vignette_strength" in overrides:
+        allowed["vignette_strength"] = overrides["vignette_strength"]
+    if base_cfg.color_boost and "color_boost_amount" in overrides:
+        allowed["color_boost_amount"] = overrides["color_boost_amount"]
+    if base_cfg.flash_on_beat:
+        for key in ("flash_on_beat", "flash_intensity", "_flash_probability"):
+            if key in overrides:
+                allowed[key] = overrides[key]
+    if base_cfg.zoom_punch:
+        for key in ("zoom_punch_strength", "_zoom_punch_probability"):
+            if key in overrides:
+                allowed[key] = overrides[key]
+    if base_cfg.slow_motion and "slow_motion_probability" in overrides:
+        allowed["slow_motion_probability"] = overrides["slow_motion_probability"]
+    return allowed
+
+
 def smart_build_clip_effect_filters(
     base_cfg: Any,
     overrides: Dict[str, Any],
@@ -514,11 +661,15 @@ def build_smart_sync_plan(
 
     planned_clips = smart_assign_clips(profiles, candidates)
 
-    # Per-cut transitions.
+    # Per-cut transitions. An empty string means "hard cut" — the cut is not a
+    # musical landmark, so no transition is spent on it.
     transitions: List[str] = []
+    prev_had_transition = False
     for i in range(len(profiles) - 1):
-        t_type = smart_transition_for_segment(profiles[i], profiles[i + 1], i)
-        transitions.append(t_type)
+        t_type = choose_transition_for_segment(
+            profiles[i], profiles[i + 1], i, prev_had_transition)
+        transitions.append(t_type or "")
+        prev_had_transition = bool(t_type)
 
     # Per-clip effect overrides.
     effect_overrides: List[Dict[str, Any]] = []

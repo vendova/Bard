@@ -347,10 +347,10 @@ INFO_OUTPUT_FILENAME = "Timestamp added automatically (output is web-optimised .
 # ============================================================================
 
 LABEL_EFFECTS_ENABLED = "✨ Enable Visual Effects"
-INFO_EFFECTS_ENABLED = "Master toggle for all effect controls below"
+INFO_EFFECTS_ENABLED = "Master toggle for the per-clip visual effects below (Transition Type applies on its own)"
 
 LABEL_SMART_SYNC = "🧠 Smart Sync (AI Energy Matching)"
-INFO_SMART_SYNC = "Shuffles clips to match beat energy, picks transitions per cut, and scales effects dynamically"
+INFO_SMART_SYNC = "Matches clips to beat energy. Adds transitions only at musical highlights (energy jumps, drops, section changes) and hard-cuts the rest; a chosen Transition Type or Preset takes priority, and only the effects you enable are scaled"
 
 LABEL_QWEN_SEMANTICS = "🔮 Qwen Semantic Detection"
 INFO_QWEN_SEMANTICS = (
@@ -413,7 +413,7 @@ LABEL_SLOW_MOTION_FACTOR = "🐌 Slow Motion Factor"
 INFO_SLOW_MOTION_FACTOR = "2.0 = half speed, 3.0 = third speed"
 
 LABEL_TRANSITION_TYPE = "🔀 Transition Type"
-INFO_TRANSITION_TYPE = "Transition effect between clips (uses xfade re-encode)"
+INFO_TRANSITION_TYPE = "Transition effect between clips (applies on its own; needs no master toggle)"
 
 LABEL_TRANSITION_DURATION = "⏱️ Transition Duration (s)"
 INFO_TRANSITION_DURATION = "Length of each transition overlap"

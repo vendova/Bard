@@ -39,6 +39,32 @@ Health: `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:12000/`
   `prepare_clips_from_sources`): downloads each link in turn and spreads a
   ~20-clip budget across successful sources.
 
+- **Transitions vs. effects master toggle:** the "✨ Enable Visual
+  Effects" checkbox only gates the *per-clip* effects (gradient, vignette,
+  zoom punch, shake, flash, color boost, glitch, mirror, slow motion). The
+  "🔀 Transition Type" dropdown is independent — `needs_transitions()` in
+  `video_effects.py` must NOT require `cfg.enabled`, or selecting a
+  transition without the master toggle silently falls through to the
+  hard-cut concat branch in `video_processor.create_music_video`.
+- **Smart Sync precedence** (`apply_smart_sync_preferences` in
+  `video_processor.py`): Smart Sync alone picks a transition *only where a cut
+  is a musical landmark* and hard-cuts the rest (see `transition_importance` /
+  `choose_transition_for_segment` in `smart_sync.py`; an empty string in the
+  transition list means hard cut). Explicit user choices win — an explicitly
+  chosen Transition Type is applied to every cut (uniform, overriding the
+  selective shuffle), then a chosen preset, and
+  `restrict_overrides_to_user_effects` in `smart_sync.py` keeps Smart Sync from
+  injecting effects the user left off (with the caveat that Smart Sync alone,
+  master toggle on and no specific effect selected, still drives its own
+  dynamic effects).
+- **Mixed transitions + hard cuts** (`smart_transitions_ffmpeg` in
+  `video_effects.py`): each boundary is either an `xfade` (named transition) or
+  a `concat` (hard cut). Every source is first normalised with `fps=<fps>` and
+  each join stage ends with `fps=<fps>` too — without that, `concat` drops the
+  frame rate and `xfade` refuses inputs whose rates differ
+  ("inputs needs to be a constant frame rate"). Keep the `fps` normalisation on
+  both sides of every join when touching this filter graph.
+
 ## Conventions
 
 - Keep changes minimal; the render pipeline is CPU-only (libx264).

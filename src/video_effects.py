@@ -296,7 +296,16 @@ def build_clip_effect_filters(
 # ---------------------------------------------------------------------------
 
 def needs_transitions(cfg: EffectsConfig) -> bool:
-    return cfg.enabled and cfg.transition_type != 'none' and cfg.transition_type in _XFADE_MAP
+    """Whether the uniform (non-smart-sync) transition path should run.
+
+    Transitions are an explicit, standalone choice and are intentionally NOT
+    gated by the per-clip effects master toggle (``cfg.enabled``). Selecting a
+    transition type is enough to request it; ``enabled`` only controls the
+    per-clip visual effects. Gating on ``enabled`` silently produced hard cuts
+    whenever a user picked a transition without also enabling those effects.
+    """
+    return (cfg.transition_type not in (None, '', 'none')
+            and cfg.transition_type in _XFADE_MAP)
 
 
 def apply_transitions_ffmpeg(
@@ -452,10 +461,15 @@ def smart_transitions_ffmpeg(
             use_nvenc, gpu_encoder, fps, temp_dir,
         )
 
-    # Validate transition list length.
+    # Validate transition list length. An empty string is a hard cut (no
+    # transition on that boundary); pad any missing entries with hard cuts so
+    # we never invent a transition the planner did not ask for.
     if len(transition_types) < n - 1:
-        transition_types = transition_types + ["fade"] * (n - 1 - len(transition_types))
-    transition_types = [t if t in _XFADE_MAP else "fade" for t in transition_types[:n - 1]]
+        transition_types = transition_types + [""] * (n - 1 - len(transition_types))
+    transition_types = [
+        t if (t == "" or t in _XFADE_MAP) else "fade"
+        for t in transition_types[:n - 1]
+    ]
 
     if transition_durations is None:
         transition_durations = [cfg.transition_duration] * (n - 1)
@@ -467,23 +481,42 @@ def smart_transitions_ffmpeg(
 
     durations = [fp.get_video_duration(c) for c in clip_files]
 
+    # Normalise every source to a constant frame rate. This is required because
+    # a hard cut joins clips with the concat filter, whose output loses its
+    # frame rate; xfade then refuses to blend inputs whose rates differ.
+    fps_label = f"fps={fps}"
+
     filter_parts: List[str] = []
     inputs: List[str] = []
-    for clip in clip_files:
+    for i, clip in enumerate(clip_files):
         inputs.extend(['-i', clip])
+        filter_parts.append(f"[{i}:v]{fps_label}[n{i}]")
 
+    # Walk the clips, blending at transition boundaries and joining at hard
+    # cuts. ``cumulative`` tracks the running output duration so each xfade
+    # offset lands on the exact cut point.
     cumulative = durations[0]
-    prev_label = '[0:v]'
+    prev_label = '[n0]'
     for i in range(1, n):
-        t_name = _XFADE_MAP[transition_types[i - 1]]
-        t_dur = transition_durations[i - 1]
-        offset = max(0.0, cumulative - t_dur)
-        out_label = f'[v{i}]' if i < n - 1 else '[vout]'
-        filter_parts.append(
-            f"{prev_label}[{i}:v]xfade=transition={t_name}:"
-            f"duration={t_dur:.4f}:offset={offset:.4f}{out_label}"
-        )
-        cumulative = cumulative + durations[i] - t_dur
+        t_type = transition_types[i - 1]
+        next_label = f'[n{i}]'
+        if t_type:
+            t_name = _XFADE_MAP[t_type]
+            t_dur = transition_durations[i - 1]
+            offset = max(0.0, cumulative - t_dur)
+            out_label = f'[v{i}]' if i < n - 1 else '[vout]'
+            filter_parts.append(
+                f"{prev_label}{next_label}xfade=transition={t_name}:"
+                f"duration={t_dur:.4f}:offset={offset:.4f},{fps_label}{out_label}"
+            )
+            cumulative = cumulative + durations[i] - t_dur
+        else:
+            # Hard cut: splice the two streams with no blend.
+            out_label = f'[v{i}]' if i < n - 1 else '[vout]'
+            filter_parts.append(
+                f"{prev_label}{next_label}concat=n=2:v=1:a=0,{fps_label}{out_label}"
+            )
+            cumulative = cumulative + durations[i]
         prev_label = out_label
 
     filter_complex = ';'.join(filter_parts)
@@ -529,11 +562,13 @@ def smart_transitions_ffmpeg(
         '-y', output_file,
     ])
 
-    # Summarise the transition mix.
+    # Summarise the transition mix (hard cuts are the "" entries).
     from collections import Counter
-    mix = Counter(transition_types)
-    mix_str = ", ".join(f"{t}×{c}" for t, c in mix.items())
-    print(f"   🧠 Smart transitions: {n - 1} cuts [{mix_str}]")
+    mix = Counter(t for t in transition_types if t)
+    hard_cuts = sum(1 for t in transition_types if not t)
+    mix_str = ", ".join(f"{t}×{c}" for t, c in mix.items()) or "none"
+    print(f"   🧠 Smart transitions: {len(mix)} types over "
+          f"{n - 1 - hard_cuts} cuts, {hard_cuts} hard cuts [{mix_str}]")
 
     result = fp._run_media_command(cmd, timeout=1800)
 

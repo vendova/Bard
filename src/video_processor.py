@@ -468,6 +468,57 @@ def create_clip_parallel(args):
         return (i, None, target_size, None, str(e), elapsed)
 
 
+def apply_smart_sync_preferences(
+    smart_transitions_list: List[str],
+    smart_effect_overrides: List[Dict],
+    effects_config: EffectsConfig,
+    transition_preset_name: str,
+    clip_count: int,
+    profiles: List[Dict],
+    variation_seed: int,
+) -> tuple[List[str], List[Dict]]:
+    """Let explicit user choices override Smart Sync's automatic behavior.
+
+    Smart Sync on its own shuffles a transition per cut and dynamically scales
+    effects. A user choice takes priority:
+
+    * effect overrides are restricted to the effects the user enabled, so Smart
+      Sync never injects effects that were left off;
+    * an explicitly chosen Transition Type is applied to every cut, replacing
+      the per-cut shuffle;
+    * otherwise a chosen transition preset supplies the per-cut mix.
+    """
+    from smart_sync import restrict_overrides_to_user_effects
+
+    restricted = [
+        restrict_overrides_to_user_effects(ov or {}, effects_config)
+        for ov in (smart_effect_overrides or [])
+    ]
+
+    if effects_config is not None and needs_transitions(effects_config):
+        chosen = effects_config.transition_type
+        n_cuts = max(0, clip_count - 1)
+        print(f"   🎭 Explicit transition overrides Smart Sync shuffle: "
+              f"{chosen} on {n_cuts} cuts")
+        return [chosen] * n_cuts, restricted
+
+    if transition_preset_name and profiles:
+        from collections import Counter
+        from transition_presets import get_preset_by_name
+        from lyrics_engine import build_smart_transitions_with_preset
+
+        preset = get_preset_by_name(transition_preset_name)
+        t_rng = random.Random(variation_seed + 42)
+        transitions, _t_durs = build_smart_transitions_with_preset(
+            profiles, preset, t_rng)
+        tmix = Counter(transitions)
+        print(f"   🎭 Transition preset: {preset.name}")
+        print(f"   Smart transitions: {', '.join(f'{t}×{c}' for t, c in tmix.items())}")
+        return transitions, restricted
+
+    return smart_transitions_list, restricted
+
+
 def create_music_video(audio_file: str, video_files: VideoList, beat_times: BeatTimes,
                       output_file: str = 'output_music_video.mkv',
                       start_time: float = 0.0, end_time: float = None,
@@ -696,18 +747,14 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         # Restore original
         _ss._stable_rng = _orig_stable_rng
 
-        # Override transitions with the selected preset if specified
-        if transition_preset_name and planned_clip_sequence:
-            from transition_presets import get_preset_by_name
-            from lyrics_engine import build_smart_transitions_with_preset
-            preset = get_preset_by_name(transition_preset_name)
-            t_rng = random.Random(variation_seed + 42)
-            smart_transitions_list, _t_durs = build_smart_transitions_with_preset(
-                profiles, preset, t_rng)
-            from collections import Counter
-            tmix = Counter(smart_transitions_list)
-            print(f"   🎭 Transition preset: {preset.name}")
-            print(f"   Smart transitions: {', '.join(f'{t}×{c}' for t, c in tmix.items())}")
+        # User choices take priority over Smart Sync's automatic behavior:
+        #   • only user-enabled effects are scaled (no injected effects)
+        #   • an explicit Transition Type replaces the per-cut shuffle
+        smart_transitions_list, smart_effect_overrides = apply_smart_sync_preferences(
+            smart_transitions_list, smart_effect_overrides,
+            effects_config, transition_preset_name,
+            len(segment_durations), profiles, variation_seed,
+        )
 
         if planned_clip_sequence:
             plan_summary = summarize_clip_plan(planned_clip_sequence)
@@ -727,8 +774,11 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
             print(f"   Targets: {plan_summary.get('targets', {})}")
             if smart_transitions_list and not transition_preset_name:
                 from collections import Counter
-                tmix = Counter(smart_transitions_list)
-                print(f"   Smart transitions: {', '.join(f'{t}×{c}' for t, c in tmix.items())}")
+                hard_cuts = sum(1 for t in smart_transitions_list if not t)
+                tmix = Counter(t for t in smart_transitions_list if t)
+                mix_str = ', '.join(f'{t}×{c}' for t, c in tmix.items()) or 'none'
+                print(f"   Smart transitions: {mix_str} "
+                      f"({hard_cuts} hard cuts)")
         else:
             print("   ⚠️  Smart sync produced no plan; falling back to legacy planner")
             planned_clip_sequence = build_planned_clip_sequence(
@@ -1071,7 +1121,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         # Otherwise, use the hard-cut concat demuxer.
         assembly_started = time.perf_counter()
         if smart_sync and smart_transitions_list and len(clip_files) > 1:
-            print(f"   🧠 Smart transition mode: per-cut adaptive xfade")
+            print(f"   🧠 Smart transition mode: selective xfade + hard cuts")
             smart_transitions_ffmpeg(
                 clip_files=clip_files,
                 output_file=output_file,
