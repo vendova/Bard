@@ -698,13 +698,54 @@ def smart_build_clip_effect_filters(
 # Full smart sync plan
 # ---------------------------------------------------------------------------
 
+def snap_to_scene_boundary(start_time: float, scene_times: Sequence[float],
+                           tolerance: float = 0.5) -> float:
+    """Nudge a clip start toward the nearest shot boundary within *tolerance*.
+
+    Avoids opening a clip mid-shot (which reads as a jarring jump cut). If no
+    boundary is close enough, the original time is returned unchanged.
+    """
+    if not scene_times:
+        return start_time
+    nearest = min(scene_times, key=lambda t: abs(t - start_time))
+    if abs(nearest - start_time) <= tolerance:
+        return max(0.0, float(nearest))
+    return start_time
+
+
+def assign_camera_groups(video_files: Sequence[str],
+                         offsets: Optional[Dict[str, float]] = None) -> Dict[str, str]:
+    """Map each source to a camera-group id (multicam awareness).
+
+    Files whose sync offset rounds to the same value are treated as the same
+    physical camera / take, so the diversity pass can prefer switching between
+    *different* cameras across adjacent cuts.
+    """
+    offsets = offsets or {}
+    groups: Dict[str, str] = {}
+    for path in video_files:
+        off = offsets.get(path)
+        key = f"cam@{round(off, 3):+.3f}" if off is not None else "cam@unknown"
+        groups[path] = key
+    return groups
+
+
 def build_smart_sync_plan(
     profiles: List[Dict],
     candidates: List[Dict],
     video_files: Sequence[str],
     beat_info: Dict | None,
+    scene_cuts_by_file: Optional[Dict[str, Sequence[float]]] = None,
+    sync_offsets: Optional[Dict[str, float]] = None,
 ) -> Tuple[List[Dict], List[str], List[Dict[str, Any]]]:
     """Build the complete smart sync plan.
+
+    Args:
+        scene_cuts_by_file: optional shot boundaries per source file; when
+            given, clip starts are snapped to shot boundaries so a clip does
+            not open mid-shot.
+        sync_offsets: optional per-file audio offsets used to tag clips with a
+            camera group for multicam-aware diversity.
 
     Returns:
         planned_clips : List of planned-clip dicts (energy-matched).
@@ -715,7 +756,17 @@ def build_smart_sync_plan(
     if not candidates and video_files:
         candidates = build_basic_candidates(video_files, beat_info)
 
+    camera_groups = assign_camera_groups(video_files, sync_offsets)
+    for candidate in candidates:
+        candidate.setdefault("camera", camera_groups.get(candidate.get("video_file"), "cam@unknown"))
+
     planned_clips = smart_assign_clips(profiles, candidates)
+
+    # Optional: snap each clip start to the nearest shot boundary.
+    if scene_cuts_by_file:
+        for clip in planned_clips:
+            cuts = scene_cuts_by_file.get(clip.get("video_file"), [])
+            clip["start_time"] = snap_to_scene_boundary(clip.get("start_time", 0.0), cuts)
 
     transitions = _place_transitions(profiles, beat_info)
 
