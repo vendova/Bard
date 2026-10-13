@@ -38,6 +38,12 @@ Health: `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:12000/`
 - **Multi-link input** (`youtube_source.parse_links` +
   `prepare_clips_from_sources`): downloads each link in turn and spreads a
   ~20-clip budget across successful sources.
+- **Shot pacing** (`auto_mode.AutoWaveConfig.min_shot_seconds`, GUI
+  "Minimum shot length"): a floor (default 2.0s) applied on top of the
+  energy-based min-intervals in `analyze_beats_auto` via
+  `dataclasses.replace`, so shots breathe instead of flickering. It is part
+  of the beat-cache key (`render_jobs.beat_cache_key`) — changing it forces a
+  re-plan.
 - **Cinematic looks** (`src/look_presets.py`): named colour grades compiled to
   FFmpeg filters by `build_look_filters()` (colorbalance/eq/vibrance/curves/
   noise/gblur+blend halation/lut3d). The grade is prepended to each clip's `-vf`
