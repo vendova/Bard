@@ -381,6 +381,12 @@ INFO_STABILIZE = (
 )
 LABEL_STABILIZE_SMOOTHING = "Stabilization smoothing (frames)"
 INFO_STABILIZE_SMOOTHING = "Higher = smoother but more cropping. 5–30 is typical."
+LABEL_MIN_SHOT = "⏱️ Minimum shot length (seconds)"
+INFO_MIN_SHOT = (
+    "The shortest a single shot may be. A calm, professional, inspirational edit "
+    "lets each shot breathe — 2.0s or more. Lower values (0.5–1.0s) cut faster and "
+    "feel frantic. Applies to Auto Mode cut planning."
+)
 LABEL_INTERPOLATE = "🎞️ Smooth frame rate (interpolation)"
 INFO_INTERPOLATE = (
     "Motion-compensated minterpolate doubles the output frame rate for buttery "

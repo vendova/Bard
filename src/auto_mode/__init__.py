@@ -73,6 +73,12 @@ class AutoWaveConfig:
     target_cut_ratio_min: float = 0.22
     target_cut_ratio_max: float = 0.46
 
+    # Pacing floor: the shortest a shot may be, in seconds. The energy-based
+    # floors above can still land on 0.30s during peak/drop sections; this is
+    # the final guard that keeps the edit calm and lets each shot breathe.
+    # 2.0s is the professional-inspirational default the user asked for.
+    min_shot_seconds: float = 2.0
+
     # Auto Mode V4: analyze source footage and let the renderer use an
     # audio-visual clip plan instead of random source sampling.
     enable_video_analysis: bool = True
@@ -250,6 +256,7 @@ def analyze_beats_auto(audio_file: str, start_time: float = 0.0,
                        enable_video_analysis: bool = True,
                        enable_qwen_semantics: bool = True,
                        qwen_model_path: str = None,
+                       min_shot_seconds: float = None,
                        progress_callback: Callable[[str], None] | None = None,
                        console_callback: Callable[[int, str], None] | None = None) -> Tuple[np.ndarray, Dict]:
     """
@@ -323,6 +330,22 @@ def analyze_beats_auto(audio_file: str, start_time: float = 0.0,
 
     _notify_progress(progress_callback, 4)
     print("   🧠 Step 4: Selecting deliberate rhythmic cuts...")
+    # Apply the user's pacing floor on top of the energy-based floors so a shot
+    # never gets shorter than min_shot_seconds (default 2.0s = calm, breathing
+    # edit) even during peak/drop sections.
+    floor = float(min_shot_seconds if min_shot_seconds is not None else cfg.min_shot_seconds)
+    if floor > 0.0:
+        from dataclasses import replace as _replace
+        cfg = _replace(
+            cfg,
+            low_energy_min_interval=max(cfg.low_energy_min_interval, floor),
+            medium_energy_min_interval=max(cfg.medium_energy_min_interval, floor),
+            high_energy_min_interval=max(cfg.high_energy_min_interval, floor),
+            peak_energy_min_interval=max(cfg.peak_energy_min_interval, floor),
+            micro_min_gap=max(cfg.micro_min_gap, floor),
+            enable_rare_micro_cuts=False,
+        )
+        print(f"   ⏱  Pacing floor: shots will hold ≥ {floor:.2f}s")
     selected_beats, selection_info = select_wave_cuts(
         beat_times=beat_times,
         sections=sections,
@@ -447,6 +470,8 @@ def get_auto_mode_info() -> str:
 Tuning:
 - Stronger downbeat/bar/phrase synchronization
 - Smooth wave-like density: calm parts hold, big moments cut faster
+- Minimum shot length floor (default 2.0s) so shots breathe like a
+  professional, inspirational edit instead of flickering
 - FFmpeg/OpenCV source-video analysis
 - Optional Qwen3-VL semantic tags for action, beauty, emotion, and use-case
 - Renderer chooses planned source moments instead of random clips
