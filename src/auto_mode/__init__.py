@@ -89,6 +89,12 @@ class AutoWaveConfig:
     anchor_bonus: float = 0.32
     phrase_bonus: float = 0.48
 
+    # Beat-sync: nudge each cut onto the nearest real transient onset so the
+    # picture change lands on the audible accent, not merely the quantised
+    # beat grid. 0 = grid-only, 1 = full tolerance (see stage7_snap).
+    onset_snap_strength: float = 1.0
+    onset_snap_tolerance: float = 0.09  # seconds (at strength 1.0)
+
 
 CONFIG = AutoWaveConfig()
 
@@ -189,6 +195,7 @@ from .stage1_audio import detect_master_beat_grid
 from .stage2_features import analyze_wave_features
 from .stage3_sections import analyze_sections
 from .stage4_select import select_wave_cuts
+from .stage7_snap import detect_onsets, snap_cuts_to_onsets, summarize_snap
 
 # ---------------------------------------------------------------------------
 # Public pipeline
@@ -257,6 +264,7 @@ def analyze_beats_auto(audio_file: str, start_time: float = 0.0,
                        enable_qwen_semantics: bool = True,
                        qwen_model_path: str = None,
                        min_shot_seconds: float = None,
+                       onset_snap_strength: float = None,
                        progress_callback: Callable[[str], None] | None = None,
                        console_callback: Callable[[int, str], None] | None = None) -> Tuple[np.ndarray, Dict]:
     """
@@ -358,6 +366,22 @@ def analyze_beats_auto(audio_file: str, start_time: float = 0.0,
     if selected_beats.size == 0:
         selected_beats = _unique_sorted(beat_times[::4], cfg.low_energy_min_interval)
 
+    # Beat-sync: nudge cuts onto the nearest real transient so every shot
+    # change lands on an audible accent rather than the quantised grid.
+    onset_times = detect_onsets(y_percussive, sr, cfg)
+    snap_strength = float(cfg.onset_snap_strength if onset_snap_strength is None
+                          else onset_snap_strength)
+    _pre_snap = np.asarray(selected_beats, dtype=float)
+    selected_beats = snap_cuts_to_onsets(
+        selected_beats, onset_times, audio_duration, cfg, strength=snap_strength,
+    )
+    if selected_beats.size == 0:
+        selected_beats = _pre_snap
+    snap_info = summarize_snap(_pre_snap, selected_beats, onset_times)
+    if snap_strength > 0.0 and snap_info["cuts_after"]:
+        print(f"   ✓ Beat-sync: {snap_info['fraction_on_onset'] * 100:.0f}% of cuts "
+              f"land on an onset (mean shift {snap_info['mean_shift_seconds'] * 1000:.0f}ms)")
+
     cut_ratio = len(selected_beats) / max(1, len(beat_times)) * 100.0
     avg_interval = float(np.mean(np.diff(selected_beats))) if len(selected_beats) > 1 else 0.0
     print(f"   ✓ Selected {len(selected_beats)} clean cuts from {len(beat_times)} beats ({cut_ratio:.1f}%)")
@@ -437,6 +461,8 @@ def analyze_beats_auto(audio_file: str, start_time: float = 0.0,
         "is_strong_bass": features["is_strong_bass"],
         "is_bar_anchor": features["is_bar_anchor"],
         "is_phrase_anchor": features["is_phrase_anchor"],
+        "is_accent": features.get("is_accent"),
+        "onset_strength": features["onset"],
     }
 
     beat_info = {
@@ -451,6 +477,11 @@ def analyze_beats_auto(audio_file: str, start_time: float = 0.0,
         "audio_visual_profile": audio_visual_profile,
         "video_analysis": video_analysis,
         "audio_duration": audio_duration,
+        "beat_sync": {
+            "onset_snap_strength": snap_strength,
+            "onset_count": int(onset_times.size),
+            **snap_info,
+        },
         "mode": "auto_v4_audio_visual_rhythmic_planner",
         "auto_style": "audio_visual_rhythmic_gmv_amv",
     }

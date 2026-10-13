@@ -118,6 +118,7 @@ def _build_segment_profiles(cut_times: np.ndarray, segment_durations: np.ndarray
         local_novelty = _interp_feature(start, beat_times, novelty, 0.4)
         section = _section_at(sections, mid)
         target = _target_for_segment(section, local_wave, local_impact, local_rhythm, local_novelty, local_arc)
+        anchor_time, anchor_impact = _segment_accent(beat_times, impact, start, end)
         profiles.append({
             "index": i,
             "start": start,
@@ -132,8 +133,29 @@ def _build_segment_profiles(cut_times: np.ndarray, segment_durations: np.ndarray
             "section": section,
             "section_type": section.get("type", "body") if section else "body",
             "target": target,
+            "anchor_time": anchor_time,
+            "anchor_offset": (anchor_time - start) if anchor_time is not None else None,
+            "anchor_impact": anchor_impact,
         })
     return profiles
+
+
+def _segment_accent(beat_times: np.ndarray, impact: np.ndarray,
+                    start: float, end: float) -> tuple:
+    """Return (time, strength) of the strongest beat inside a segment.
+
+    This is the musical accent the visual should hit: the shot's motion peak is
+    placed here so the clip "moves on the beat" rather than starting arbitrarily.
+    """
+    if beat_times.size == 0 or impact.size != beat_times.size:
+        return None, 0.0
+    mask = (beat_times >= start) & (beat_times <= end)
+    if not np.any(mask):
+        return None, 0.0
+    idx = np.where(mask)[0]
+    local = impact[idx]
+    best = int(idx[int(np.argmax(local))])
+    return float(beat_times[best]), float(impact[best])
 
 
 def _interp_feature(time_s: float, beat_times: np.ndarray, values: np.ndarray, default: float) -> float:
@@ -252,6 +274,16 @@ def _materialize_clip(candidate: Dict, profile: Dict, index: int) -> Dict:
         anchor = float(candidate.get("center", candidate.get("start", 0.0)))
         align = 0.44
 
+    # Motion-on-beat: place the clip's peak-motion frame on the segment's
+    # strongest accent, so the visual movement lands with the hit. Only for
+    # energetic targets (drop/build) where a motion peak reads as deliberate;
+    # soft/flow shots keep their natural centre.
+    beat_alignment = 0.0
+    accent_offset = profile.get("anchor_offset")
+    if accent_offset is not None and target in {"drop", "build", "rhythm"}:
+        align = float(min(0.92, max(0.08, accent_offset / max(final_duration, 1e-6))))
+        beat_alignment = float(_clamp(profile.get("anchor_impact", 0.0)))
+
     start_time = anchor - source_duration * align
     start_time = max(0.0, min(start_time, max(0.0, video_duration - source_duration)))
 
@@ -271,4 +303,7 @@ def _materialize_clip(candidate: Dict, profile: Dict, index: int) -> Dict:
         "audio_end": profile.get("end"),
         "wave": profile.get("wave"),
         "impact": profile.get("impact"),
+        "anchor_time": profile.get("anchor_time"),
+        "anchor_impact": profile.get("anchor_impact"),
+        "beat_alignment": beat_alignment,
     }

@@ -196,6 +196,14 @@ def _materialize_smart_clip(candidate: Dict, profile: Dict, index: int, seg_ener
         anchor = float(candidate.get("center", candidate.get("start", 0.0)))
         align = 0.44
 
+    # Motion-on-beat: land the clip's peak-motion frame on the segment's
+    # strongest accent so the visual movement reads as hitting the beat.
+    beat_alignment = 0.0
+    accent_offset = profile.get("anchor_offset")
+    if accent_offset is not None and target in {"drop", "build", "rhythm"}:
+        align = float(min(0.92, max(0.08, float(accent_offset) / max(final_duration, 1e-6))))
+        beat_alignment = _clamp(profile.get("anchor_impact", 0.0), default=0.0)
+
     start_time = anchor - source_duration * align
     start_time = max(0.0, min(start_time, max(0.0, video_duration - source_duration)))
 
@@ -214,6 +222,9 @@ def _materialize_smart_clip(candidate: Dict, profile: Dict, index: int, seg_ener
         "audio_end": profile.get("end"),
         "wave": profile.get("wave"),
         "impact": profile.get("impact"),
+        "anchor_time": profile.get("anchor_time"),
+        "anchor_impact": profile.get("anchor_impact"),
+        "beat_alignment": beat_alignment,
         "segment_energy": seg_energy,
         "clip_energy": compute_clip_energy(candidate),
     }
@@ -561,6 +572,11 @@ def smart_effect_overrides(profile: Dict, clip_index: int) -> Dict[str, Any]:
     overrides["flash_intensity"] = flash_int
     overrides["_flash_probability"] = flash_prob  # used by smart_build_filters
 
+    # Flash lands on the segment's strongest accent, not the clip start.
+    anchor_offset = profile.get("anchor_offset")
+    if anchor_offset is not None:
+        overrides["flash_offset"] = float(anchor_offset)
+
     # Vignette: stronger on soft/emotional segments.
     if target == "soft" or section_type in {"breakdown", "outro"}:
         overrides["vignette_strength"] = min(0.8, 0.4 + (1.0 - seg_energy) * 0.4)
@@ -630,7 +646,7 @@ def restrict_overrides_to_user_effects(
     if base_cfg.color_boost and "color_boost_amount" in overrides:
         allowed["color_boost_amount"] = overrides["color_boost_amount"]
     if base_cfg.flash_on_beat:
-        for key in ("flash_on_beat", "flash_intensity", "_flash_probability"):
+        for key in ("flash_on_beat", "flash_intensity", "flash_offset", "_flash_probability"):
             if key in overrides:
                 allowed[key] = overrides[key]
     if base_cfg.zoom_punch:
@@ -677,6 +693,8 @@ def smart_build_clip_effect_filters(
         cfg_kwargs["slow_motion_probability"] = overrides["slow_motion_probability"]
     if "flash_intensity" in overrides:
         cfg_kwargs["flash_intensity"] = overrides["flash_intensity"]
+    if "flash_offset" in overrides:
+        cfg_kwargs["flash_offset"] = overrides["flash_offset"]
 
     if cfg_kwargs:
         effective_cfg = replace(base_cfg, **cfg_kwargs)

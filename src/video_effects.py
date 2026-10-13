@@ -84,6 +84,8 @@ class EffectsConfig:
     shake_strength: float = 8.0            # pixels
     flash_on_beat: bool = False            # white flash at clip start
     flash_intensity: float = 0.6           # 0-1
+    flash_offset: float = 0.0              # seconds into the clip to flash
+                                           # (Smart Sync sets this to the accent)
     color_boost: bool = False              # saturation/contrast boost
     color_boost_amount: float = 1.3        # multiplier
     glitch: bool = False                   # digital glitch effect
@@ -299,15 +301,16 @@ def build_clip_effect_filters(
     # --- Flash on beat ---
     if cfg.flash_on_beat:
         fi = cfg.flash_intensity
-        flash_frames = max(2, int(round(fps * 0.08)))  # ~80ms flash
+        flash_seconds = max(2, int(round(fps * 0.08))) / fps  # ~80ms flash
         total_frames = max(1, int(round(clip_duration * fps)))
-        # Flash white at the start of the clip, fading out over flash_frames.
-        # Use enable expression on a white fade.
-        enable_end = min(flash_frames, total_frames) / fps
+        # Flash white at the musical accent (cfg.flash_offset), not blindly at
+        # t=0, so the strobe lands on the hit. Clamp so the flash fits the clip.
+        flash_at = max(0.0, min(float(cfg.flash_offset), clip_duration - flash_seconds))
+        enable_end = min(flash_at + flash_seconds, total_frames / fps)
         filters.append(
             f"drawbox=t=fill:c=white@{fi}:"
             f"x=0:y=0:w={w}:h={h}:"
-            f"enable='between(t,0,{enable_end:.3f})'"
+            f"enable='between(t,{flash_at:.3f},{enable_end:.3f})'"
         )
 
     return filters, speed_factor

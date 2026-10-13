@@ -44,6 +44,20 @@ Health: `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:12000/`
   `dataclasses.replace`, so shots breathe instead of flickering. It is part
   of the beat-cache key (`render_jobs.beat_cache_key`) — changing it forces a
   re-plan.
+- **Beat-sync** (`auto_mode.stage7_snap`, GUI "Beat-sync strength",
+  `onset_snap_strength` default 1.0): after cut selection, `snap_cuts_to_onsets`
+  nudges every cut onto the nearest real transient (`detect_onsets`) within
+  `onset_snap_tolerance` (0.09s × strength), re-applying the no-flicker gap.
+  This is what makes cuts land on the *audible* hit rather than the quantised
+  grid. Stage 2 also exposes `is_accent`/`onset` in `beat_info["rhythm_data"]`.
+  - **Motion-on-beat**: `_build_segment_profiles` adds `anchor_time` /
+    `anchor_offset` (the strongest beat inside each segment); `_materialize_clip`
+    (both `stage6_av_planner` and `smart_sync`) aligns a drop/build/rhythm clip's
+    source `peak_time` onto that accent via `beat_alignment`.
+  - **Accent flash**: `smart_effect_overrides` sets `flash_offset`, and
+    `build_clip_effect_filters` flashes at that time instead of at t=0.
+  - Both `onset_snap_strength` and `min_shot_seconds` are part of
+    `beat_cache_key` and the persisted job record (resume restores them).
 - **Cinematic looks** (`src/look_presets.py`): named colour grades compiled to
   FFmpeg filters by `build_look_filters()` (colorbalance/eq/vibrance/curves/
   noise/gblur+blend halation/lut3d). The grade is prepended to each clip's `-vf`

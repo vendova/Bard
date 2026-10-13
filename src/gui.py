@@ -710,7 +710,8 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        remove_dead_space: bool = False,
                        export_timeline: bool = False,
                        sync_sources: bool = False,
-                       min_shot_seconds: float = 2.0) -> StatusResult:
+                       min_shot_seconds: float = 2.0,
+                       onset_snap_strength: float = 1.0) -> StatusResult:
     total_started = time.perf_counter()
     try:
         parallel_workers = PARALLEL_WORKERS
@@ -923,7 +924,8 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
         # changed since the last analysis — both alter the cut plan.
         _qwen_changed = session_state.get('cached_qwen_enabled') != qwen_semantics
         _pacing_changed = session_state.get('cached_min_shot') != float(min_shot_seconds)
-        _cache_stale = _qwen_changed or _pacing_changed
+        _snap_changed = session_state.get('cached_onset_snap') != float(onset_snap_strength)
+        _cache_stale = _qwen_changed or _pacing_changed or _snap_changed
         _skip_analysis = False
         if regenerate and cached_beat_info and not _cache_stale:
             selected_beats = session_state['cached_selected_beats']
@@ -940,7 +942,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             _beat_key = None
             _disk_hit = False
             if _jobs is not None:
-                _beat_key = _jobs.beat_cache_key(local_audio_path, local_video_paths, qwen_semantics, min_shot_seconds)
+                _beat_key = _jobs.beat_cache_key(local_audio_path, local_video_paths, qwen_semantics, min_shot_seconds, onset_snap_strength)
                 _hit = _jobs.load_beat_cache(_beat_key)
                 if _hit is not None:
                     selected_beats, beat_info = _hit
@@ -951,6 +953,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                     session_state['cached_selected_beats'] = selected_beats
                     session_state['cached_qwen_enabled'] = qwen_semantics
                     session_state['cached_min_shot'] = float(min_shot_seconds)
+                    session_state['cached_onset_snap'] = float(onset_snap_strength)
                     if progress_callback:
                         progress_callback(_stage_status(6))
                     _stage5_summary(console_logger, beat_info.get("video_analysis"))
@@ -967,6 +970,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                     video_files=local_video_paths,
                     enable_qwen_semantics=qwen_semantics,
                     min_shot_seconds=min_shot_seconds,
+                    onset_snap_strength=onset_snap_strength,
                     progress_callback=progress_callback,
                     console_callback=lambda stage, message: console_logger.stage_line(stage, message) if console_logger else None,
                 )
@@ -976,6 +980,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                 session_state['cached_selected_beats'] = selected_beats
                 session_state['cached_qwen_enabled'] = qwen_semantics
                 session_state['cached_min_shot'] = float(min_shot_seconds)
+                session_state['cached_onset_snap'] = float(onset_snap_strength)
                 _stage5_summary(console_logger, beat_info.get("video_analysis"))
                 # Persist to disk so a restart can resume.
                 if _beat_key and _jobs is not None:
@@ -1332,13 +1337,14 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  export_timeline: bool = False,
                  sync_sources: bool = False,
                  min_shot_seconds: float = 2.0,
+                 onset_snap_strength: float = 1.0,
                  *,
                  regenerate: bool = False,
                  resume_job_id: str | None = None,
                  ) -> Iterator[StatusResult]:
     # NOTE: regenerate/resume_job_id are keyword-only. They are never bound to
     # Gradio inputs — the shared input list goes straight from sync_sources to
-    # min_shot_slider — so keeping them positional would insert two extra slots
+    # onset_snap_slider — so keeping them positional would insert two extra slots
     # and shift every bound value from overlay_url onward.
     status_queue: queue.Queue[str | None] = queue.Queue()
     result_queue: queue.Queue[StatusResult] = queue.Queue(maxsize=1)
@@ -1365,7 +1371,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
             qwen_semantics, draft_mode, youtube_url, overlay_url,
             stabilize, stabilize_smoothing, interpolate, interpolate_fps,
             rife, remove_dead_space, export_timeline, sync_sources,
-            min_shot_seconds,
+            min_shot_seconds, onset_snap_strength,
             regenerate=regenerate, resume_job_id=resume_job_id,
         )
     finally:
@@ -1415,6 +1421,7 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                  export_timeline: bool = False,
                  sync_sources: bool = False,
                  min_shot_seconds: float = 2.0,
+                 onset_snap_strength: float = 1.0,
                  *,
                  regenerate: bool = False,
                  resume_job_id: str | None = None,
@@ -1437,6 +1444,12 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                 audio_file = rec["inputs"].get("audio_file") or audio_file
                 video_files = rec["inputs"].get("video_files") or video_files
                 zip_file = rec["inputs"].get("zip_file") or zip_file
+            # Restore persisted pacing/beat-sync settings so a resumed render
+            # re-plans exactly as it would have before the interruption.
+            if rec.get("min_shot_seconds") is not None:
+                min_shot_seconds = float(rec["min_shot_seconds"])
+            if rec.get("onset_snap_strength") is not None:
+                onset_snap_strength = float(rec["onset_snap_strength"])
             if rec.get("seed"):
                 session_state["_resume_seed"] = rec["seed"]
             _jobs.update_job(job_id, status=_jobs.STATUS_RUNNING, stage="resuming")
@@ -1453,6 +1466,7 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                 "qwen_semantics": bool(qwen_semantics and QWEN_BACKEND_AVAILABLE),
                 "smart_sync": smart_sync,
                 "min_shot_seconds": float(min_shot_seconds),
+                "onset_snap_strength": float(onset_snap_strength),
             })
             try:
                 persisted = _jobs.persist_inputs(job_id, audio_file, video_files or [], zip_file)
@@ -1576,6 +1590,7 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                     export_timeline=export_timeline,
                     sync_sources=sync_sources,
                     min_shot_seconds=min_shot_seconds,
+                    onset_snap_strength=onset_snap_strength,
                 )
         except Exception as e:
             console_logger.line(f"Error: {e}")
@@ -1660,6 +1675,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
                       export_timeline: bool = False,
                       sync_sources: bool = False,
                       min_shot_seconds: float = 2.0,
+                      onset_snap_strength: float = 1.0,
                       ) -> Iterator[StatusResult]:
     """Re-render with updated settings, reusing cached beat analysis.
 
@@ -1686,6 +1702,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
             remove_dead_space=remove_dead_space,
             export_timeline=export_timeline, sync_sources=sync_sources,
             min_shot_seconds=min_shot_seconds,
+            onset_snap_strength=onset_snap_strength,
             regenerate=False, resume_job_id=None,
         )
         return
@@ -1710,6 +1727,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
         remove_dead_space=remove_dead_space,
         export_timeline=export_timeline, sync_sources=sync_sources,
         min_shot_seconds=min_shot_seconds,
+        onset_snap_strength=onset_snap_strength,
         regenerate=True, resume_job_id=None,
     )
 
@@ -1873,6 +1891,7 @@ def create_ui() -> gr.Blocks:
                         sync_sources = gr.Checkbox(value=False, label=LABEL_SYNC_SOURCES, info=INFO_SYNC_SOURCES)
                     stabilize_smoothing = gr.Slider(2, 40, value=10, step=1, label=LABEL_STABILIZE_SMOOTHING, info=INFO_STABILIZE_SMOOTHING)
                     min_shot_slider = gr.Slider(0.5, 6.0, value=2.0, step=0.25, label=LABEL_MIN_SHOT, info=INFO_MIN_SHOT)
+                    onset_snap_slider = gr.Slider(0.0, 1.0, value=1.0, step=0.1, label=LABEL_ONSET_SNAP, info=INFO_ONSET_SNAP)
 
                 with gr.Accordion(LABEL_LYRICS_SECTION, open=False):
                     lyrics_text = gr.Textbox(
@@ -1981,6 +2000,7 @@ def create_ui() -> gr.Blocks:
             export_timeline,
             sync_sources,
             min_shot_slider,
+            onset_snap_slider,
         ]
         _shared_outputs = [video_output, status_output, session_state, download_btn]
 

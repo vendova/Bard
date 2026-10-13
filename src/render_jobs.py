@@ -222,13 +222,16 @@ def _file_signature(path: str) -> str:
 
 
 def beat_cache_key(audio_file: str, video_files: List[str],
-                   qwen_enabled: bool, min_shot_seconds: float = 2.0) -> str:
+                   qwen_enabled: bool, min_shot_seconds: float = 2.0,
+                   onset_snap_strength: float = 1.0) -> str:
     sig = _file_signature(audio_file)
     for v in (video_files or []):
         sig += "|" + _file_signature(v)
     sig += f"|qwen={int(bool(qwen_enabled))}"
     # Pacing floor changes the cut plan, so it must invalidate the cache.
     sig += f"|minshot={float(min_shot_seconds):.2f}"
+    # Beat-sync strength also changes where cuts land.
+    sig += f"|snap={float(onset_snap_strength):.2f}"
     return hashlib.sha1(sig.encode("utf-8", "ignore")).hexdigest()[:20]
 
 

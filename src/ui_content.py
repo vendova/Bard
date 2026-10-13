@@ -387,6 +387,13 @@ INFO_MIN_SHOT = (
     "lets each shot breathe — 2.0s or more. Lower values (0.5–1.0s) cut faster and "
     "feel frantic. Applies to Auto Mode cut planning."
 )
+LABEL_ONSET_SNAP = "🎯 Beat-sync strength (snap cuts to transients)"
+INFO_ONSET_SNAP = (
+    "Nudges every cut onto the nearest real drum/vocal transient instead of the "
+    "quantised beat grid, so picture changes land exactly on the audible hit. "
+    "1.0 = maximum lock; 0 = grid-only. Also aligns each clip's motion peak and "
+    "beat flashes to the strongest accent in its shot."
+)
 LABEL_INTERPOLATE = "🎞️ Smooth frame rate (interpolation)"
 INFO_INTERPOLATE = (
     "Motion-compensated minterpolate doubles the output frame rate for buttery "

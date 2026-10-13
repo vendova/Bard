@@ -69,6 +69,12 @@ def analyze_wave_features(y: np.ndarray, y_percussive: np.ndarray, sr: int,
     is_phrase_anchor[::max(1, cfg.phrase_beats)] = True
     is_bar_anchor[::max(1, cfg.bar_beats)] = True
 
+    # Accent flags: beats that carry the loudest transient energy. The renderer
+    # uses these to key flashes/zoom-punches to the real hits.
+    onset_thr = _safe_percentile(onset, 78, 0.7)
+    impact_thr = _safe_percentile(impact_score, 80, 0.7)
+    is_accent = (onset >= onset_thr) & (impact_score >= impact_thr)
+
     return {
         "kick": kick,
         "bass": bass,
@@ -92,6 +98,7 @@ def analyze_wave_features(y: np.ndarray, y_percussive: np.ndarray, sr: int,
         "is_strong_bass": bass >= bass_thr,
         "is_bar_anchor": is_bar_anchor,
         "is_phrase_anchor": is_phrase_anchor,
+        "is_accent": is_accent,
         "rms_curve": rms_curve_n,
         "centroid_curve": centroid_curve_n,
         "flux_curve": flux_curve_n,
