@@ -1,0 +1,10 @@
+# Generated / regenerable artefacts — recreate with the scripts in scripts/.
+__pycache__/
+*.pyc
+out/
+assets/footage/
+assets/music/
+assets/models/
+assets/footage_index.json
+font_match_sheet.png
+*.track_analysis.json

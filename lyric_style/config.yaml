@@ -1,0 +1,284 @@
+# =============================================================================
+# BeatSync "lyric_style" — parameterised edit template
+# -----------------------------------------------------------------------------
+# Reproduces the STYLE / STRUCTURE / TIMING / TYPOGRAPHY of a reference
+# short-form lyric edit. No third-party footage, music or lyric text is bundled.
+# Every random choice derives from `seed` (determinism, Section 1.5).
+# Values marked "estimated" are starting points; tune against reference frames.
+# =============================================================================
+
+project:
+  name: lyric_style
+  # [MY_HANDLE] — replace with your own handle. Nothing else is watermarked.
+  handle: "MY_HANDLE"
+  # Root for relative paths below.
+  root: .
+
+paths:
+  fonts_dir: assets/fonts
+  models_dir: assets/models
+  footage_dir: assets/footage
+  music_dir: assets/music
+  captions_dir: assets/captions
+  work_dir: out/work          # per-shot intermediates (safe to delete)
+  renders_dir: out/renders
+  reports_dir: out/reports
+  # Licence manifest: every asset used MUST have a row here (Section 1.1).
+  licence_manifest: assets/licence_manifest.csv
+
+# -----------------------------------------------------------------------------
+# Output spec (Section 2)
+# -----------------------------------------------------------------------------
+output:
+  width: 1920
+  height: 1080
+  fps: 30
+  vertical: false             # true -> 1080x1920 face-aware crop (Section 12)
+  codec: libx264
+  profile: high
+  pix_fmt: yuv420p
+  color_primaries: bt709
+  color_trc: bt709
+  colorspace: bt709
+  bitrate_mbps: 14            # 12..16 Mbps
+  audio_codec: aac
+  audio_bitrate_k: 192
+  audio_rate: 48000
+  audio_channels: 2
+  end_fade_frames: 3          # fade last 3 frames to black
+  audio_end_fade_ms: 10       # 10 ms audio fade to avoid clicks
+
+# -----------------------------------------------------------------------------
+# Loudness (Section 8.3)
+# -----------------------------------------------------------------------------
+loudness:
+  target_lufs: -14.0
+  max_true_peak_dbtp: -1.0
+  measure_short_window: 30.0
+
+# -----------------------------------------------------------------------------
+# Structure / cut timing (Section 3.2). Lengths are multiples of one bar.
+# Layout entries: [section, shot_count, length_in_bars, end_length_in_bars|null]
+# -----------------------------------------------------------------------------
+structure:
+  jitter_bars: 0.10           # +/- jitter, always snapped back to the beat grid
+  snap_tolerance_s: 0.04      # snap cuts to nearest beat/half-beat within 40 ms
+  layouts:
+    reference:                # 30.4 s feel
+      - ["A", 10, 1.00, null]
+      - ["B",  4, 0.50, null]
+      - ["C",  2, 1.00, null]
+      - ["D",  4, 0.60, 0.40]
+    short:                    # ~20 s
+      - ["A",  6, 1.00, null]
+      - ["B",  3, 0.50, null]
+      - ["C",  2, 1.00, null]
+      - ["D",  3, 0.60, 0.40]
+    loop:                     # ~15 s, seamless
+      - ["A",  4, 1.00, null]
+      - ["B",  4, 0.50, null]
+      - ["D",  4, 0.60, 0.40]
+  captioned_sections: ["A", "C"]
+  loop_seamless: true         # loop layout: last frame matches first
+
+# Tempo classes (Section 8.4 Axis 1). `shot_len_bars` overrides layout A length.
+tempo_classes:
+  slow:            {bpm_min: 60,  bpm_max: 80,  shot_len_bars: 0.50, text_hold_frac: 0.85}
+  mid:             {bpm_min: 90,  bpm_max: 115, shot_len_bars: 0.75, text_hold_frac: 0.85}
+  reference_like:  {bpm_min: 118, bpm_max: 130, shot_len_bars: 1.00, text_hold_frac: 0.85}
+  fast:            {bpm_min: 135, bpm_max: 160, shot_len_bars: 1.00, text_hold_frac: 0.75}
+
+# -----------------------------------------------------------------------------
+# Signature transition: "blur-flash settle" (Section 5.2)
+# All amounts scale linearly with `strength` (0.0 .. 1.5).
+# -----------------------------------------------------------------------------
+transition:
+  strength: 1.0
+  settle_frames: 12           # 0.40 s at 30 fps
+  settle_frames_short: 8      # for shots < short_shot_threshold_s
+  short_shot_threshold_s: 1.0
+  apply_to_first_shot: false
+  blur_sigma_by_frame:        # at 1280 wide; scaled by width/1280 and strength
+    - {frames: [0, 1],  sigma: 14}
+    - {frames: [2, 3],  sigma: 10}
+    - {frames: [4, 5],  sigma: 6}
+    - {frames: [6, 8],  sigma: 3}
+    - {frames: [9, 11], sigma: 1}
+  flash_brightness: 0.40      # * d(f)^2, d(f)=max(0,1-f/(settle_frames-1))
+  saturation_boost: 0.25      # 1 + boost*d(f)
+  zoom_amount: 0.10           # 1 + amount*d(f)^2, centred
+  warm_bias_red: 0.03         # +3% red in the wash
+  easing: quadratic_ease_out
+
+# Optional extras — all OFF unless enabled (Section 5.3).
+extras:
+  crossfade: false
+  glitch: false
+  shake: false
+  color_flicker: false
+  sfx: false                  # whoosh/impact at B and D cuts (Section 8.3)
+  sfx_offset_db: -3
+  highlight_bloom: false
+  bloom_radius_px: 12
+  bloom_strength: 0.10
+
+# -----------------------------------------------------------------------------
+# Fonts (Section 6.2). MUST be set from the contact sheet before batch render.
+# -----------------------------------------------------------------------------
+fonts:
+  script: "MrsSaintDelafield-Regular.ttf"   # PROVISIONAL — confirm from font_match_sheet.png
+  key: "Anton-Regular.ttf"                  # PROVISIONAL — confirm from font_match_sheet.png
+  script_candidates:
+    - MrsSaintDelafield-Regular.ttf
+    - HerrVonMuellerhoff-Regular.ttf
+    - MonsieurLaDoulaise-Regular.ttf
+    - Allison-Regular.ttf
+  key_candidates:
+    - Anton-Regular.ttf
+    - BebasNeue-Regular.ttf
+    - LeagueGothic-Regular.ttf
+    - Oswald.ttf
+  key_synthetic_skew_deg: 8   # applied to Bebas/League/Oswald if no italic
+  watermark_font: Montserrat.ttf
+
+# -----------------------------------------------------------------------------
+# Lyric lockup: colour, size, placement, animation (Section 6.3-6.6)
+# -----------------------------------------------------------------------------
+caption:
+  script_fill: "#FFFFFF"
+  script_shadow: {color: "#000000", opacity: 0.35, dx: 2, dy: 2, blur: 4}
+  key_fill: "#FFE81A"
+  key_shadow: {color: "#000000", opacity: 0.40, dx: 2, dy: 2, blur: 3}
+  key_outline: {enabled: false, color: "#1A1A1A", px: 1}
+  contrast_high_luma: 0.75    # above -> shadow 55% + outline
+  contrast_high_shadow_opacity: 0.55
+  contrast_low_luma: 0.20
+  # Geometry as fractions of the frame (landscape). Vertical mode overrides below.
+  lockup_width_frac: [0.14, 0.22]
+  lockup_height_frac: [0.10, 0.16]
+  key_cap_height_frac: 0.045  # of frame height (3.5..5%)
+  script_initial_ratio: 2.5   # initial height / key cap height
+  script_lowercase_ratio: 0.9
+  script_tilt_deg: 8          # counter-clockwise
+  key_tilt_deg: 8             # italic lean
+  script_tracking: 0
+  key_tracking: 20
+  margin_edge_frac: [0.06, 0.10]   # from anchored edge
+  margin_bottom_frac: [0.08, 0.14] # from bottom
+  safe_margin_frac: 0.05
+  vertical_clear_bottom_frac: 0.18
+  placement_seed_jitter_frac: 0.01
+  # Animation (frames relative to the cut at frame 0)
+  anim:
+    script_start_frame: 1
+    key_start_frame: 3
+    script_in_frames: 6       # left-to-right soft wipe + opacity
+    key_in_frames: 5          # scale 85->100 ease-out + opacity
+    fully_visible_frame: 9
+    exit_frames: 4            # fade + slight downward drift
+    exit_before_cut_frames: 6
+    hold_end_before_cut_s: 0.30
+
+# Vertical (9:16) overrides (Section 12)
+caption_vertical:
+  lockup_width_frac: [0.34, 0.46]
+  key_cap_height_frac: 0.030  # 2.6..3.4%
+  y_range_frac: [0.58, 0.78]
+  uniform_scale_bd: 1.05      # Section B/D crop scale
+  headroom_frac: 0.12
+
+# -----------------------------------------------------------------------------
+# Watermark (Section 9). Renders `project.handle`.
+# -----------------------------------------------------------------------------
+watermark:
+  bottom_frac: [0.04, 0.06]
+  cap_height_frac: 0.016
+  color: "#FFFFFF"
+  opacity: 0.40               # 35..45%
+  tracking: 60
+  shadow: {enabled: true, color: "#000000", opacity: 0.30, dx: 1, dy: 1, blur: 2}
+  vertical_y_frac: 0.82
+  caption_clearance_frac: 0.02  # stay 2% below a bottom-centre lockup
+
+# -----------------------------------------------------------------------------
+# Shot selection + scoring (Section 4)
+# -----------------------------------------------------------------------------
+selection:
+  closeup_min_frac: 0.70      # Section A/C tight/medium close-ups
+  face_height_frac: [0.25, 0.55]
+  alternate_subjects: true
+  no_reuse_within_variant: true
+  max_overlap_between_variants: 0.40
+  trim_after_source_cut_s: [0.10, 0.30]
+  play_speed: 1.00
+  slow_push_in: [1.00, 1.04]
+  reject_burnt_in_text: true
+  score_weights:
+    face_size: 0.30
+    face_visibility: 0.20
+    sharpness: 0.20           # Laplacian variance
+    brightness_fit: 0.15
+    motion_energy: 0.10
+    no_text: 0.05
+  section_energy:
+    A: {motion: low,  brightness: [0.25, 0.65]}
+    B: {motion: high, brightness: [0.55, 0.90]}
+    C: {motion: low,  brightness: [0.25, 0.65]}
+    D: {motion: med,  brightness: [0.30, 0.85]}
+
+# -----------------------------------------------------------------------------
+# Ingest (Stage 2)
+# -----------------------------------------------------------------------------
+ingest:
+  scene_threshold: 27.0
+  min_scene_len_s: 0.5
+  text_detection: true        # flag likely burnt-in text regions
+  cache: footage_index.json
+
+# -----------------------------------------------------------------------------
+# Audio analysis (Stage 3)
+# -----------------------------------------------------------------------------
+audio_analysis:
+  sr: 22050
+  hop_length: 512
+  window_seconds: 30.0
+  recommend_top_windows: 3
+  fade_in_ms: 15
+  fade_out_ms: 150
+
+# -----------------------------------------------------------------------------
+# Colour finishing (Section 7)
+# -----------------------------------------------------------------------------
+grade:
+  normalise_exposure_stops: 0.5
+  normalise_wb_kelvin: 300
+  warm_bias_kelvin: 200
+  warm_bias_saturation: 0.04
+  sharpen: {enabled: true, amount: 0.5}
+  vignette: 0.0               # 0..0.10
+  grain: false
+
+# -----------------------------------------------------------------------------
+# QC (Stage 6)
+# -----------------------------------------------------------------------------
+qc:
+  duration_tolerance_frames: 1
+  cut_beat_tolerance_ms: 40
+  settle_frames: 12
+  caption_face_overlap_max: 0.10
+  caption_edge_margin_min_frac: 0.05
+  lufs_tolerance: 1.0
+  contact_sheet_frames_per_shot: 1
+
+# -----------------------------------------------------------------------------
+# Batch (Section 8.4)
+# -----------------------------------------------------------------------------
+batch:
+  count: 40
+  min_distinct: 0.60
+  layouts: [reference, short, loop]
+  min_tracks: 8
+  font_pairs: 1               # rotate among <=2 approved pairs
+
+# Deterministic master seed (Section 1.5).
+seed: 20240601

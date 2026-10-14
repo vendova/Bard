@@ -1,0 +1,23 @@
+# Licence manifest — the rights gate (Section 1.1).
+#
+# Every footage clip, music track and caption file the renderer touches MUST
+# have a row here with a licence that permits publication. If an asset is used
+# but has no row (or a blank/denied licence), the pipeline REFUSES to render it
+# and says which asset and why.
+#
+# asset_id,path,kind,licence,source,owner,allowed
+#   kind      : footage | music | caption
+#   licence   : e.g. "owned", "CC-BY-4.0", "platform-licensed", "self-authored"
+#   allowed   : yes | no   (no -> hard reject, with the reason printed)
+#
+# Example rows (replace with your real assets):
+asset_id,path,kind,licence,source,owner,allowed
+synth_1,assets/footage/synth_1.mp4,footage,self-authored,synthetic-generator,me,yes
+synth_2,assets/footage/synth_2.mp4,footage,self-authored,synthetic-generator,me,yes
+synth_3,assets/footage/synth_3.mp4,footage,self-authored,synthetic-generator,me,yes
+synth_4,assets/footage/synth_4.mp4,footage,self-authored,synthetic-generator,me,yes
+synth_5,assets/footage/synth_5.mp4,footage,self-authored,synthetic-generator,me,yes
+synth_6,assets/footage/synth_6.mp4,footage,self-authored,synthetic-generator,me,yes
+synth_music,assets/music/synth_125bpm.wav,music,self-authored,synthetic-generator,me,yes
+example_captions,assets/captions/example.captions,caption,self-authored,placeholder-text,me,yes
+placeholder,assets/captions/placeholder.captions,caption,self-authored,placeholder-text,me,yes

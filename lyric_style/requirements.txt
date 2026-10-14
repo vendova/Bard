@@ -1,0 +1,8 @@
+# lyric_style pipeline dependencies (CPU-only)
+numpy
+opencv-python-headless>=4.8
+PyYAML
+librosa>=0.10
+soundfile
+scenedetect>=0.6
+Pillow

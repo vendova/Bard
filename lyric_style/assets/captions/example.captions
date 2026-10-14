@@ -1,0 +1,23 @@
+# Caption file format (Section 6.7) — one caption per line.
+# start_seconds | script_text | key_text
+#
+# script_text: 1..2 words, rendered in the calligraphic script layer.
+#              First letter becomes the decorative initial.
+# key_text:    exactly one word, rendered ALL CAPS in the bold condensed layer.
+# start_seconds: time (s) of the sung line; the planner snaps it to the shot
+#              that contains it (within the config snap tolerance).
+#
+# DO NOT put copyrighted lyrics here unless you hold the rights (Section 1.3).
+# The example below is generic placeholder text you own.
+00.00 | Stay with | ME
+01.90 | Every | NIGHT
+03.80 | Hold me | CLOSE
+05.70 | Never | GO
+07.60 | In your | EYES
+09.50 | Feel the | LIGHT
+11.40 | Dance with | ME
+13.30 | All night | LONG
+15.20 | You and | I
+17.10 | Forever | YOURS
+22.70 | Come back | HOME
+24.60 | Stay with | ME
