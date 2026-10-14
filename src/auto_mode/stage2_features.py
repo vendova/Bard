@@ -12,8 +12,15 @@ from . import _interp_to_beats, _normalize, _safe_percentile, _smooth
 def analyze_wave_features(y: np.ndarray, y_percussive: np.ndarray, sr: int,
                           beat_times: np.ndarray, beat_frames: np.ndarray,
                           onset_env: np.ndarray, cfg: AutoWaveConfig,
-                          use_gpu: bool = False) -> Dict:
-    """Extract beat-synchronous energy/rhythm data with smooth wave behavior."""
+                          use_gpu: bool = False,
+                          downbeat_times: np.ndarray = None) -> Dict:
+    """Extract beat-synchronous energy/rhythm data with smooth wave behavior.
+
+    ``downbeat_times`` optionally supplies real bar starts (from the neural
+    refiner). When given, bar/phrase anchors lock onto those downbeats instead
+    of counting every ``bar_beats``-th beat, so the musical grid stays aligned
+    on tracks whose bar phase drifts.
+    """
     duration = len(y) / sr
 
     rms_curve = librosa.feature.rms(y=y, frame_length=cfg.n_fft, hop_length=cfg.hop_length)[0]
@@ -66,8 +73,23 @@ def analyze_wave_features(y: np.ndarray, y_percussive: np.ndarray, sr: int,
 
     is_phrase_anchor = np.zeros(len(beat_times), dtype=bool)
     is_bar_anchor = np.zeros(len(beat_times), dtype=bool)
-    is_phrase_anchor[::max(1, cfg.phrase_beats)] = True
-    is_bar_anchor[::max(1, cfg.bar_beats)] = True
+    if downbeat_times is not None and len(downbeat_times) > 0 and len(beat_times) > 0:
+        # Lock bar anchors onto the real downbeats by snapping each downbeat to
+        # the nearest beat, then take every phrase_beats-th downbeat as a
+        # phrase anchor.
+        db = np.sort(np.asarray(downbeat_times, dtype=float))
+        nearest = np.searchsorted(beat_times, db)
+        nearest = np.clip(nearest, 0, len(beat_times) - 1)
+        prev = np.clip(nearest - 1, 0, len(beat_times) - 1)
+        take_prev = np.abs(beat_times[prev] - db) <= np.abs(beat_times[nearest] - db)
+        bar_idx = np.where(take_prev, prev, nearest)
+        is_bar_anchor[np.unique(bar_idx)] = True
+        if is_bar_anchor.any():
+            bars = np.flatnonzero(is_bar_anchor)
+            is_phrase_anchor[bars[::max(1, cfg.phrase_beats)]] = True
+    if not is_bar_anchor.any():
+        is_phrase_anchor[::max(1, cfg.phrase_beats)] = True
+        is_bar_anchor[::max(1, cfg.bar_beats)] = True
 
     # Accent flags: beats that carry the loudest transient energy. The renderer
     # uses these to key flashes/zoom-punches to the real hits.

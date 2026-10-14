@@ -247,6 +247,59 @@ def _notify_progress(progress_callback: Callable[[str], None] | None, stage_numb
         pass
 
 
+def _detect_neural_beats(audio_path: str, y: np.ndarray, sr: int,
+                         cfg: AutoWaveConfig, use_gpu: bool) -> Dict:
+    """Run the optional neural beat backends (TCN + refiner).
+
+    Returns ``{"used": bool, "beats", "tempo", "downbeats", "backend", ...}``.
+    Never raises: a missing package/model or a detection failure returns
+    ``used=False`` so the caller keeps the librosa grid.
+    """
+    out = {"used": False, "beats": None, "tempo": None, "downbeats": None,
+           "backend": "unavailable", "notes": ""}
+    try:
+        import beat_models
+    except Exception as exc:
+        out["notes"] = f"beat_models unavailable: {exc}"
+        return out
+
+    if not beat_models.torch_available():
+        out["notes"] = "PyTorch not installed (see requirements-beats.txt)"
+        return out
+
+    # The TCN expects 22050 Hz mono; resample only when the shared buffer
+    # was loaded at a different rate.
+    import librosa
+    y_model = y if sr == beat_models.SAMPLE_RATE else librosa.resample(
+        y, orig_sr=sr, target_sr=beat_models.SAMPLE_RATE)
+
+    try:
+        grid = beat_models.detect_beat_grid(
+            audio_path, use_tcn=True, use_refiner=True,
+            device="cuda" if use_gpu else "cpu", y=y_model,
+        )
+    except Exception as exc:
+        out["notes"] = f"neural detection failed: {type(exc).__name__}: {exc}"
+        return out
+
+    beats = np.asarray(grid.get("beats", []), dtype=float)
+    beats = beats[np.isfinite(beats) & (beats >= 0.0)]
+    if beats.size < 2:
+        out["notes"] = grid.get("notes") or "neural backend produced too few beats"
+        out["backend"] = grid.get("backend", "unavailable")
+        return out
+
+    out["used"] = True
+    out["beats"] = np.sort(beats)
+    out["tempo"] = float(grid.get("tempo") or 0.0) or None
+    downbeats = np.asarray(grid.get("downbeats", []), dtype=float)
+    out["downbeats"] = downbeats[np.isfinite(downbeats)] if downbeats.size else None
+    out["backend"] = grid.get("backend", "tcn")
+    out["refined"] = bool(grid.get("refined"))
+    out["notes"] = grid.get("notes", "")
+    return out
+
+
 def _notify_console(console_callback: Callable[[int, str], None] | None,
                     stage_number: int, message: str) -> None:
     if console_callback is None:
@@ -265,6 +318,7 @@ def analyze_beats_auto(audio_file: str, start_time: float = 0.0,
                        qwen_model_path: str = None,
                        min_shot_seconds: float = None,
                        onset_snap_strength: float = None,
+                       enable_neural_beats: bool = False,
                        progress_callback: Callable[[str], None] | None = None,
                        console_callback: Callable[[int, str], None] | None = None) -> Tuple[np.ndarray, Dict]:
     """
@@ -274,6 +328,11 @@ def analyze_beats_auto(audio_file: str, start_time: float = 0.0,
     - small waves: longer holds, mainly phrase/bar anchors;
     - medium waves: cuts every 2-4 beats;
     - big waves: tighter 1-2 beat rhythm, but only on strong musical impacts.
+
+    When ``enable_neural_beats`` is set and the optional backends in
+    ``src/beat_models`` are installed, the librosa beat grid is replaced by a
+    neural TCN (+ Transformer refiner) grid and its downbeats drive the bar
+    anchors.
     """
     cfg = CONFIG
 
@@ -298,16 +357,48 @@ def analyze_beats_auto(audio_file: str, start_time: float = 0.0,
         y_harmonic, y_percussive = y, y
 
     _notify_progress(progress_callback, 1)
-    print("   🥁 Step 1: Detecting stable beat grid...")
-    beat_times, tempo, beat_frames, onset_env = detect_master_beat_grid(y_percussive, sr, cfg)
+
+    neural = {"used": False, "beats": None, "tempo": None, "downbeats": None,
+              "backend": "unavailable", "notes": ""}
+    if enable_neural_beats:
+        print("   🧠 Step 1a: Neural beat detection (TCN + refiner)...")
+        neural = _detect_neural_beats(audio_file, y, sr, cfg, use_gpu)
+
+    downbeat_times = None
+    if neural["used"]:
+        beat_times = np.asarray(neural["beats"], dtype=float)
+        tempo = float(neural["tempo"]) if neural["tempo"] else 120.0
+        # Recover frame indices so the percussive onset envelope stays
+        # beat-aligned for the feature stage.
+        beat_frames = librosa.time_to_frames(beat_times, sr=sr, hop_length=cfg.hop_length)
+        beat_frames = np.asarray(beat_frames, dtype=int)
+        downbeat_times = neural["downbeats"]
+        onset_env = librosa.onset.onset_strength(
+            y=y_percussive, sr=sr, hop_length=cfg.hop_length, aggregate=np.median)
+        onset_env = _normalize(_smooth(onset_env, 3))
+        print(f"      ✓ Neural grid: {len(beat_times)} beats at {tempo:.1f} BPM "
+              f"({neural['backend']})")
+        _notify_console(console_callback, 1,
+                        f"Neural beat grid: {len(beat_times)} beats at {tempo:.1f} BPM "
+                        f"({neural['backend']})")
+    else:
+        if enable_neural_beats:
+            print(f"      ⚠️  Neural backend unavailable, using librosa grid: {neural['notes']}")
+            _notify_console(console_callback, 1,
+                            f"Neural backend unavailable; using librosa grid ({neural['notes']})")
+        print("   🥁 Step 1: Detecting stable beat grid...")
+        beat_times, tempo, beat_frames, onset_env = detect_master_beat_grid(y_percussive, sr, cfg)
+
     if len(beat_times) < 2:
         raise ValueError("Auto Mode could not detect enough rhythmic events to build a cut plan.")
-    print(f"      ✓ {len(beat_times)} beats detected at {tempo:.1f} BPM")
-    _notify_console(console_callback, 1, f"Beat grid: {len(beat_times)} beats at {tempo:.1f} BPM")
+    if not neural["used"]:
+        print(f"      ✓ {len(beat_times)} beats detected at {tempo:.1f} BPM")
+        _notify_console(console_callback, 1, f"Beat grid: {len(beat_times)} beats at {tempo:.1f} BPM")
 
     _notify_progress(progress_callback, 2)
     print("   🌊 Step 2: Reading energy waves and rhythm impacts...")
-    features = analyze_wave_features(y, y_percussive, sr, beat_times, beat_frames, onset_env, cfg, use_gpu)
+    features = analyze_wave_features(y, y_percussive, sr, beat_times, beat_frames, onset_env, cfg, use_gpu,
+                                     downbeat_times=downbeat_times)
     wave = np.asarray(features.get("wave", []), dtype=float)
     impact = np.asarray(features.get("impact_score", []), dtype=float)
     rhythm = np.asarray(features.get("rhythm_score", []), dtype=float)
@@ -484,6 +575,13 @@ def analyze_beats_auto(audio_file: str, start_time: float = 0.0,
         },
         "mode": "auto_v4_audio_visual_rhythmic_planner",
         "auto_style": "audio_visual_rhythmic_gmv_amv",
+        "neural_beats": {
+            "enabled": bool(enable_neural_beats),
+            "used": bool(neural["used"]),
+            "backend": neural.get("backend", "unavailable"),
+            "refined": bool(neural.get("refined", False)),
+            "notes": neural.get("notes", ""),
+        },
     }
 
     try:
@@ -495,7 +593,7 @@ def analyze_beats_auto(audio_file: str, start_time: float = 0.0,
     return selected_beats, beat_info
 
 def get_auto_mode_info() -> str:
-    """Return human-readable Auto Mode V3.2 summary for UI/debug use."""
+    """Return human-readable Auto Mode summary for UI/debug use."""
     return """🤖 Auto Mode V4 - Audio-Visual Rhythmic GMV/AMV Planner
 
 Tuning:
@@ -503,6 +601,8 @@ Tuning:
 - Smooth wave-like density: calm parts hold, big moments cut faster
 - Minimum shot length floor (default 2.0s) so shots breathe like a
   professional, inspirational edit instead of flickering
+- Optional neural beat detection (TCN + Transformer refiner) for dense
+  percussive/Indic rhythms; off by default, see requirements-beats.txt
 - FFmpeg/OpenCV source-video analysis
 - Optional Qwen3-VL semantic tags for action, beauty, emotion, and use-case
 - Renderer chooses planned source moments instead of random clips

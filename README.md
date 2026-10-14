@@ -212,6 +212,29 @@ Auto Mode is the main creative engine.
 
 Detects stable beat positions and tempo from the percussive part of the song.
 
+The default tracker is `librosa.beat.beat_track`. For dense percussive
+material — dhol/tabla rolls, off-beat syncopation, and the hard drops typical of
+Bollywood/Tollywood/Punjabi folk — you can switch on **Neural beat detection**
+(Smooth section). It runs two optional Hugging Face models in sequence:
+
+*   `finnvoorhees/beat-detection-tcn` — a Temporal Convolutional Network that
+    detects beats from a log-mel spectrogram;
+*   `livechord-music/livechord-beat-refiner` — a Transformer that corrects
+    phase drift and returns a real downbeat (bar) grid.
+
+When the refiner covers the whole track its grid replaces the TCN grid;
+otherwise the full-length TCN grid is kept. The bar/phrase anchors in Stage 2
+then snap onto the model's downbeats instead of the assumed 4/4 grid. This is
+opt-in and off by default; install the extra and restart:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements-beats.txt
+```
+
+Without it the checkbox stays disabled and Auto Mode uses the librosa grid, so
+nothing breaks on a box with no torch.
+
 ### Stage 2 - Energy and rhythm
 
 Builds beat-synchronous curves for:
@@ -266,7 +289,12 @@ The renderer creates a frame-accurate cut timeline, chooses source moments for e
 
 ## Runtime Notes
 
-BeatSync does not require PyTorch, Transformers, or a separately installed CUDA Toolkit. The installer uses `cupy-cuda13x[ctk]`, which downloads the CUDA runtime libraries CuPy needs into the portable Python environment.
+BeatSync does not require PyTorch, Transformers, or a separately installed CUDA Toolkit for its core pipeline. The installer uses `cupy-cuda13x[ctk]`, which downloads the CUDA runtime libraries CuPy needs into the portable Python environment.
+
+The one optional exception is **Neural beat detection** (`src/beat_models`,
+off by default), which needs CPU-only torch and downloads its two model
+checkpoints from the Hugging Face Hub on first use. See
+`requirements-beats.txt`. Nothing else imports torch.
 
 Qwen3-VL semantic tagging uses the bundled llama.cpp Vulkan backend and these GGUF files:
 

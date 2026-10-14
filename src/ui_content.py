@@ -401,6 +401,15 @@ INFO_WHOLE_SONG = (
     "On: keep the full music length and reuse source moments to fill it — "
     "useful for a full-length track when you have limited clips."
 )
+LABEL_NEURAL_BEATS = "🎵 Neural beat detection (TCN + refiner)"
+INFO_NEURAL_BEATS = (
+    "Uses two Hugging Face models to lock cuts onto dense percussion — ideal for "
+    "Indic/Bollywood/Punjabi folk where dhol/tabla rolls and off-beat syncopation "
+    "confuse the default detector. A Temporal Convolutional Network (TCN) finds "
+    "the beats, then a Transformer refiner corrects phase drift and supplies a "
+    "real downbeat (bar) grid. Requires the optional extra in requirements-beats.txt; "
+    "if it is not installed the render falls back to the standard beat tracker."
+)
 LABEL_BURN_LYRICS = "🔥 Burn lyrics into the video (optional)"
 INFO_BURN_LYRICS = (
     "Off (default): lyrics are only used to generate the timestamped LRC "

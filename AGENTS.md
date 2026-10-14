@@ -87,6 +87,41 @@ Health: `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:12000/`
   `dataclasses.replace`, so shots breathe instead of flickering. It is part
   of the beat-cache key (`render_jobs.beat_cache_key`) — changing it forces a
   re-plan.
+- **Neural beat detection** (`src/beat_models/`, GUI "🎵 Neural beat detection"
+  in the Smooth accordion, default **off**): optional replacement for the
+  librosa beat grid, built for dense percussive/Indic material.
+  - `tcn.py` vendors `finnvoorhees/beat-detection-tcn` (log-mel → TCN →
+    beat-activation peak-pick); `refiner.py` vendors
+    `livechord-music/livechord-beat-refiner` (98-channel CQT/chroma/onset/RMS
+    stack + beat/downbeat one-hot grid → Transformer → refined beat **and
+    downbeat** grid). Weights download from the HF Hub on first use into
+    `BEATSYNC_BEAT_MODEL_CACHE`; offline boxes point `BEATSYNC_BEAT_MODEL_DIR`
+    / `BEATSYNC_BEAT_REFINER_DIR` at pre-downloaded dirs.
+  - Nothing here imports torch at module load. `beat_models.torch_available()`
+    gates the GUI checkbox; `gui.NEURAL_BEATS_AVAILABLE` probes it once at
+    import. `beat_models.detect_beat_grid()` never raises — on any failure it
+    returns `backend="unavailable"` and the caller keeps librosa.
+  - `auto_mode._detect_neural_beats` resamples the already-decoded buffer to
+    22050 Hz and calls the package with `y=` (no second decode). When it
+    succeeds, `analyze_beats_auto(enable_neural_beats=True)` swaps in the
+    neural beat times and passes the real downbeats to
+    `stage2_features.analyze_wave_features(downbeat_times=...)`, which snaps
+    bar anchors onto them (phrase anchors every `phrase_beats` downbeats) and
+    only falls back to the 4/4 every-Nth-beat heuristic when there are none.
+    `beat_info["neural_beats"]` reports `{enabled, used, backend, refined, notes}`.
+  - **The refiner caps its input at `MAX_FRAMES` (~15 min)**. A refined grid
+    that only covers a prefix is rejected and the full-length TCN grid is kept
+    (`detect_beat_grid` compares `covered_seconds` vs `input_seconds`), so a
+    long song never silently loses its tail.
+  - `neural_beats` is threaded like the other pacing knobs: bound in
+    `_shared_inputs` **after** `burn_lyrics_enabled` (order must match the
+    signatures), passed through `process_video → _render_video_job →
+    _process_video_impl`, restored on resume from the job record, and included
+    in `render_jobs.beat_cache_key` so toggling it re-plans.
+  - Optional dep in `requirements-beats.txt` (torch/huggingface_hub/
+    safetensors); it is **not** in `requirements-render.txt` because the Render
+    free plan is 512 MB. `tests/test_beat_models.py` builds random-weight
+    checkpoints so the real load/forward path is exercised without network.
 - **Beat-sync** (`auto_mode.stage7_snap`, GUI "Beat-sync strength",
   `onset_snap_strength` default 1.0): after cut selection, `snap_cuts_to_onsets`
   nudges every cut onto the nearest real transient (`detect_onsets`) within

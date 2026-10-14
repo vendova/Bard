@@ -1,0 +1,27 @@
+# BeatSync-Engine — optional neural beat detection (src/beat_models)
+#
+# Everything in src/beat_models is optional and off by default. Without these
+# packages the render pipeline keeps using librosa.beat.beat_track; with them,
+# two Hugging Face models sharpen the cut grid on dense/Indic rhythms:
+#
+#   * finnvoorhees/beat-detection-tcn      — a ~269K-param Temporal
+#       Convolutional Network that detects beats directly from a log-mel
+#       spectrogram. Robust on fast dhol/tabla rolls and off-beat syncopation
+#       where librosa's grid tracker drifts.
+#   * livechord-music/livechord-beat-refiner — a bidirectional Transformer that
+#       refines the grid and supplies a real downbeat (bar) grid.
+#
+# The weights are downloaded from the Hugging Face Hub on first use and cached
+# under BEATSYNC_BEAT_MODEL_CACHE (default ~/.cache/beatsync_beat_models, or
+# <BEATSYNC_STATE_DIR>/beat_models when that is set). For an air-gapped box,
+# pre-download the files and point BEATSYNC_BEAT_MODEL_DIR /
+# BEATSYNC_BEAT_REFINER_DIR at the containing directories.
+#
+# Install CPU-only torch from the PyTorch index (the PyPI torch wheel is the
+# large CUDA build):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements-beats.txt
+
+torch>=2.0
+huggingface_hub>=0.20
+safetensors>=0.4

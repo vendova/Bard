@@ -11,3 +11,16 @@ numpy==2.5.3
 opencv-python-headless==5.0.0.93
 pillow==12.3.0
 yt-dlp==2026.8.19
+
+# ── Optional: neural beat detection ────────────────────────────────────
+# Off by default because CPU-only torch + model weights add ~200 MB and the
+# Render free plan only has 512 MB RAM. To enable it on a larger instance,
+# uncomment the two lines below (and install torch from the CPU index first —
+# the PyPI wheel is the multi-GB CUDA build):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements-beats.txt
+# The "🎵 Neural beat detection" checkbox stays disabled until torch is
+# importable; the render falls back to librosa's beat tracker otherwise.
+# torch>=2.0
+# safetensors>=0.4
+# huggingface_hub>=0.20
