@@ -34,6 +34,9 @@ _MODEL_CACHE: Dict[str, object] = {}
 
 # Selectable Whisper models, smallest/fastest first. large-v3 is the most
 # accurate (best for Indic languages); turbo is a good speed/accuracy balance.
+# HuggingFace repo ids are also allowed: a fine-tune published in the
+# Transformers (PyTorch) format is converted to CTranslate2 on first use and
+# cached, so it runs through the same fast CPU path as the stock sizes.
 MODEL_CHOICES = [
     ("tiny — fastest, lowest accuracy", "tiny"),
     ("base — fast, basic accuracy", "base"),
@@ -41,8 +44,15 @@ MODEL_CHOICES = [
     ("medium — high accuracy", "medium"),
     ("large-v3 — highest accuracy (recommended)", "large-v3"),
     ("large-v3-turbo — high accuracy, faster", "large-v3-turbo"),
+    ("Telugu — vasista22/whisper-telugu-large-v2 (fine-tuned)", "vasista22/whisper-telugu-large-v2"),
+    ("Telugu — lamy/Telugu-transcription (fine-tuned)", "lamyer/Telugu-transcription"),
 ]
 DEFAULT_MODEL = "large-v3"
+
+# Cache dir for CTranslate2 conversions of HuggingFace Transformers models.
+_CONVERTED_DIR = os.environ.get(
+    "BEATSYNC_ASR_CACHE", os.path.join(os.path.expanduser("~"), ".cache", "beatsync_asr")
+)
 
 
 def available_backend() -> Optional[str]:
@@ -114,6 +124,60 @@ def _decode_pcm(audio_file: str) -> "object":
     return np.frombuffer(proc.stdout, dtype="<f4").astype("float32")
 
 
+def _looks_like_hf_repo(model: str) -> bool:
+    """A HuggingFace repo id like ``owner/name`` (not a local path)."""
+    if not model or "/" not in model:
+        return False
+    if os.path.isabs(model) or os.path.exists(model):
+        return False
+    owner, _, name = model.partition("/")
+    return bool(owner and name) and not name.startswith((".", "/"))
+
+
+def _hf_model_language(repo: str) -> Optional[str]:
+    """Best-effort language code for known fine-tuned repos."""
+    low = repo.lower()
+    if "telugu" in low or "te" == low.split("/")[-1][:2]:
+        return "te"
+    return None
+
+
+def _resolve_faster_whisper_model(model_size: str, progress=None) -> str:
+    """Return a path/name faster-whisper can load, converting HF repos if needed.
+
+    Stock sizes ("large-v3", ...) are returned unchanged. A HuggingFace repo id
+    in the Transformers (PyTorch) format is converted to CTranslate2 once and
+    the result is cached under ``_CONVERTED_DIR``.
+    """
+    if not _looks_like_hf_repo(model_size):
+        return model_size
+
+    safe = model_size.replace("/", "__")
+    dest = os.path.join(_CONVERTED_DIR, safe)
+    if os.path.isdir(dest) and os.path.exists(os.path.join(dest, "model.bin")):
+        return dest
+
+    def log(msg: str) -> None:
+        if progress is not None:
+            try:
+                progress(msg)
+            except Exception:
+                pass
+
+    log(f"Converting '{model_size}' to CTranslate2 (one-time; needs torch+transformers)…")
+    import ctranslate2
+
+    os.makedirs(_CONVERTED_DIR, exist_ok=True)
+    # float16 + low-memory loading keeps peak RAM bounded for large checkpoints
+    # (a full large-v2 conversion can otherwise exhaust a small CPU box).
+    converter = ctranslate2.converters.TransformersConverter(
+        model_size, load_as_float16=True, low_cpu_mem_usage=True
+    )
+    converter.convert(dest, quantization="int8", force=False)
+    log(f"Conversion complete: {dest}")
+    return dest
+
+
 def _transcribe_faster_whisper(audio_file: str, language: Optional[str],
                                model_size: str, progress=None) -> List[Dict[str, object]]:
     from faster_whisper import WhisperModel
@@ -125,11 +189,15 @@ def _transcribe_faster_whisper(audio_file: str, language: Optional[str],
             except Exception:
                 pass
 
-    key = f"{model_size}:{_compute_type()}"
+    resolved = _resolve_faster_whisper_model(model_size, progress)
+    if language is None:
+        language = _hf_model_language(model_size)
+
+    key = f"{resolved}:{_compute_type()}"
     model = _MODEL_CACHE.get(key)
     if model is None:
         log(f"Loading Whisper model '{model_size}' (downloads once, then cached)…")
-        model = WhisperModel(model_size, device="cpu", compute_type=_compute_type())
+        model = WhisperModel(resolved, device="cpu", compute_type=_compute_type())
         _MODEL_CACHE[key] = model
     else:
         log(f"Using cached Whisper model '{model_size}'")

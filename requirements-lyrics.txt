@@ -11,6 +11,16 @@
 # precision with BEATSYNC_WHISPER_COMPUTE (int8 default, float32 for max fidelity).
 faster-whisper>=1.0
 
+# Optional: to use HuggingFace Whisper fine-tunes (e.g. the Telugu models in
+# the UI dropdown) the first transcription converts the PyTorch checkpoint to
+# CTranslate2, which needs torch + transformers. Stock sizes (tiny..large-v3)
+# do NOT need them. Install CPU-only torch from the PyTorch index (the PyPI
+# torch wheel is the large CUDA build):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install "transformers>=4.40" "huggingface_hub[cli]"
+# torch>=2.0
+# transformers>=4.40
+
 # Alternatives (install at most one):
 #   openai-whisper>=20231117      # needs PyTorch
 #   vosk>=0.3.45                  # set BEATSYNC_VOSK_MODEL to an extracted model

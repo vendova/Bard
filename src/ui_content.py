@@ -413,8 +413,11 @@ INFO_LRC_MODEL = (
     "Which Whisper model to use when auto-transcribing (empty lyrics box). "
     "tiny/base are fastest but least accurate; small/medium are balanced; "
     "large-v3 is the most accurate (best for Indic languages) and "
-    "large-v3-turbo is nearly as accurate but faster. Models download once "
-    "on first use, then are cached. Ignored when you paste lyrics yourself."
+    "large-v3-turbo is nearly as accurate but faster. The two Telugu entries "
+    "are community fine-tunes hosted on HuggingFace, best for Telugu songs. "
+    "Stock models download once; HuggingFace fine-tunes are converted to "
+    "CTranslate2 on first use (slower first run, needs torch+transformers). "
+    "Ignored when you paste lyrics yourself."
 )
 LABEL_LRC_LANGUAGE = "Detected language / script"
 LABEL_LRC_OUTPUT = "Timed lyrics (LRC)"

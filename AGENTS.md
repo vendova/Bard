@@ -30,6 +30,19 @@ Health: `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:12000/`
 
 ## Feature notes
 
+- **Speech-to-text (Lyrics "Generate LRC")**: `src/lyrics_asr.py`. Backends in
+  priority order: `faster_whisper` (CTranslate2, no PyTorch — the recommended
+  one), `openai-whisper`, `vosk`. Audio is decoded via FFmpeg (never PyAV — see
+  `_decode_pcm`) and fed to Whisper as a float32 numpy array. The UI exposes a
+  "Speech-to-text model" dropdown (`lyrics_asr.MODEL_CHOICES`): tiny/base/
+  small/medium/large-v3 (default)/large-v3-turbo plus community HuggingFace
+  fine-tunes. HF repos in the Transformers (PyTorch) format are converted to
+  CTranslate2 on first use (`_resolve_faster_whisper_model`, cache under
+  `BEATSYNC_ASR_CACHE`, default `~/.cache/beatsync_asr`) and need `torch` +
+  `transformers` (CPU torch only; not installed by default). Conversion uses
+  `load_as_float16=True, low_cpu_mem_usage=True` — a plain large-v2 conversion
+  OOMs a 15 GB CPU box. Env overrides: `BEATSYNC_WHISPER_MODEL`,
+  `BEATSYNC_WHISPER_COMPUTE`.
 - **Lyric video link** (Lyrics section): paste a download link to a
   black-background lyric clip. It is blended over the edited clips with a
   `lighten` effect and, when no audio file is uploaded, its own audio is
