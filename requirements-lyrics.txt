@@ -1,0 +1,14 @@
+# BeatSync-Engine — optional lyric auto-transcription
+#
+# Everything in src/lyrics_asr.py is optional. Without any of these the app
+# still parses pasted lyrics and writes timestamped LRC files; it just cannot
+# transcribe an audio track on its own.
+#
+# faster-whisper is the recommended CPU-friendly backend (CTranslate2, no
+# PyTorch). The Whisper model weights are downloaded on first use; pick a size
+# with BEATSYNC_WHISPER_MODEL (tiny/base/small/medium/large-v3).
+faster-whisper>=1.0
+
+# Alternatives (install at most one):
+#   openai-whisper>=20231117      # needs PyTorch
+#   vosk>=0.3.45                  # set BEATSYNC_VOSK_MODEL to an extracted model

@@ -623,6 +623,207 @@ def _transliterate_kannada(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Bengali (U+0980–U+09FF) — Bengali, Assamese
+# ---------------------------------------------------------------------------
+
+_BENGALI_VOWELS = {
+    'অ': 'a', 'আ': 'aa', 'ই': 'i', 'ঈ': 'ii', 'উ': 'u', 'ঊ': 'uu',
+    'ঋ': 'ri', 'এ': 'e', 'ঐ': 'ai', 'ও': 'o', 'ঔ': 'au',
+}
+
+_BENGALI_MATRAS = {
+    'া': 'aa', 'ি': 'i', 'ী': 'ii', 'ু': 'u', 'ূ': 'uu', 'ৃ': 'ri',
+    'ে': 'e', 'ৈ': 'ai', 'ো': 'o', 'ৌ': 'au',
+}
+
+_BENGALI_CONSONANTS = {
+    'ক': 'ka', 'খ': 'kha', 'গ': 'ga', 'ঘ': 'gha', 'ঙ': 'nga',
+    'চ': 'cha', 'ছ': 'chha', 'জ': 'ja', 'ঝ': 'jha', 'ঞ': 'nya',
+    'ট': 'ta', 'ঠ': 'tha', 'ড': 'da', 'ঢ': 'dha', 'ণ': 'na',
+    'ত': 'ta', 'থ': 'tha', 'দ': 'da', 'ধ': 'dha', 'ন': 'na',
+    'প': 'pa', 'ফ': 'pha', 'ব': 'ba', 'ভ': 'bha', 'ম': 'ma',
+    'য': 'ya', 'র': 'ra', 'ল': 'la', 'শ': 'sha', 'ষ': 'sha',
+    'স': 'sa', 'হ': 'ha', 'ড়': 'ra', 'ঢ়': 'rha', 'য়': 'ya',
+    'ক্ষ': 'ksha', 'ত্র': 'tra', 'জ্ঞ': 'gya',
+}
+
+_BENGALI_SPECIALS = {
+    'ং': 'n', 'ঃ': 'h', 'ঁ': 'n',
+    '০': '0', '১': '1', '২': '2', '৩': '3', '৪': '4',
+    '৫': '5', '৬': '6', '৭': '7', '৮': '8', '৯': '9',
+    '।': '. ', '॥': ' || ',
+}
+
+_BENGALI_VIRAMA = '্'
+
+
+def _transliterate_bengali(text: str) -> str:
+    return _transliterate_brahmic(text, _BENGALI_CONSONANTS, _BENGALI_VOWELS,
+                                  _BENGALI_MATRAS, _BENGALI_SPECIALS, _BENGALI_VIRAMA)
+
+
+# ---------------------------------------------------------------------------
+# Gurmukhi (U+0A00–U+0A7F) — Punjabi
+# ---------------------------------------------------------------------------
+
+_GURMUKHI_VOWELS = {
+    'ਅ': 'a', 'ਆ': 'aa', 'ਇ': 'i', 'ਈ': 'ii', 'ਉ': 'u', 'ਊ': 'uu',
+    'ਏ': 'e', 'ਐ': 'ai', 'ਓ': 'o', 'ਔ': 'au',
+}
+
+_GURMUKHI_MATRAS = {
+    'ਾ': 'aa', 'ਿ': 'i', 'ੀ': 'ii', 'ੁ': 'u', 'ੂ': 'uu',
+    'ੇ': 'e', 'ੈ': 'ai', 'ੋ': 'o', 'ੌ': 'au',
+}
+
+_GURMUKHI_CONSONANTS = {
+    'ਕ': 'ka', 'ਖ': 'kha', 'ਗ': 'ga', 'ਘ': 'gha', 'ਙ': 'nga',
+    'ਚ': 'cha', 'ਛ': 'chha', 'ਜ': 'ja', 'ਝ': 'jha', 'ਞ': 'nya',
+    'ਟ': 'ta', 'ਠ': 'tha', 'ਡ': 'da', 'ਢ': 'dha', 'ਣ': 'na',
+    'ਤ': 'ta', 'ਥ': 'tha', 'ਦ': 'da', 'ਧ': 'dha', 'ਨ': 'na',
+    'ਪ': 'pa', 'ਫ': 'pha', 'ਬ': 'ba', 'ਭ': 'bha', 'ਮ': 'ma',
+    'ਯ': 'ya', 'ਰ': 'ra', 'ਲ': 'la', 'ਵ': 'va', 'ਸ਼': 'sha',
+    'ਸ': 'sa', 'ਹ': 'ha', 'ਖ਼': 'kha', 'ਗ਼': 'ga', 'ਜ਼': 'za',
+    'ੜ': 'ra', 'ਫ਼': 'pha', 'ਲ਼': 'la',
+}
+
+_GURMUKHI_SPECIALS = {
+    'ਂ': 'n', 'ਃ': 'h', 'ਁ': 'n', 'ੰ': 'n', 'ੱ': '',
+    '੦': '0', '੧': '1', '੨': '2', '੩': '3', '੪': '4',
+    '੫': '5', '੬': '6', '੭': '7', '੮': '8', '੯': '9',
+    '।': '. ', '॥': ' || ',
+}
+
+_GURMUKHI_VIRAMA = '੍'
+
+
+def _transliterate_gurmukhi(text: str) -> str:
+    return _transliterate_brahmic(text, _GURMUKHI_CONSONANTS, _GURMUKHI_VOWELS,
+                                  _GURMUKHI_MATRAS, _GURMUKHI_SPECIALS, _GURMUKHI_VIRAMA)
+
+
+# ---------------------------------------------------------------------------
+# Gujarati (U+0A80–U+0AFF)
+# ---------------------------------------------------------------------------
+
+_GUJARATI_VOWELS = {
+    'અ': 'a', 'આ': 'aa', 'ઇ': 'i', 'ઈ': 'ii', 'ઉ': 'u', 'ઊ': 'uu',
+    'ઋ': 'ri', 'એ': 'e', 'ઐ': 'ai', 'ઓ': 'o', 'ઔ': 'au',
+}
+
+_GUJARATI_MATRAS = {
+    'ા': 'aa', 'િ': 'i', 'ી': 'ii', 'ુ': 'u', 'ૂ': 'uu', 'ૃ': 'ri',
+    'ે': 'e', 'ૈ': 'ai', 'ો': 'o', 'ૌ': 'au',
+}
+
+_GUJARATI_CONSONANTS = {
+    'ક': 'ka', 'ખ': 'kha', 'ગ': 'ga', 'ઘ': 'gha', 'ઙ': 'nga',
+    'ચ': 'cha', 'છ': 'chha', 'જ': 'ja', 'ઝ': 'jha', 'ઞ': 'nya',
+    'ટ': 'ta', 'ઠ': 'tha', 'ડ': 'da', 'ઢ': 'dha', 'ણ': 'na',
+    'ત': 'ta', 'થ': 'tha', 'દ': 'da', 'ધ': 'dha', 'ન': 'na',
+    'પ': 'pa', 'ફ': 'pha', 'બ': 'ba', 'ભ': 'bha', 'મ': 'ma',
+    'ય': 'ya', 'ર': 'ra', 'લ': 'la', 'વ': 'va', 'શ': 'sha',
+    'ષ': 'sha', 'સ': 'sa', 'હ': 'ha', 'ળ': 'la',
+    'ક્ષ': 'ksha', 'જ્ઞ': 'gya', 'ત્ર': 'tra',
+}
+
+_GUJARATI_SPECIALS = {
+    'ં': 'n', 'ઃ': 'h', 'ઁ': 'n',
+    '૦': '0', '૧': '1', '૨': '2', '૩': '3', '૪': '4',
+    '૫': '5', '૬': '6', '૭': '7', '૮': '8', '૯': '9',
+    '।': '. ', '॥': ' || ',
+}
+
+_GUJARATI_VIRAMA = '્'
+
+
+def _transliterate_gujarati(text: str) -> str:
+    return _transliterate_brahmic(text, _GUJARATI_CONSONANTS, _GUJARATI_VOWELS,
+                                  _GUJARATI_MATRAS, _GUJARATI_SPECIALS, _GUJARATI_VIRAMA)
+
+
+# ---------------------------------------------------------------------------
+# Odia (U+0B00–U+0B7F)
+# ---------------------------------------------------------------------------
+
+_ODIA_VOWELS = {
+    'ଅ': 'a', 'ଆ': 'aa', 'ଇ': 'i', 'ଈ': 'ii', 'ଉ': 'u', 'ଊ': 'uu',
+    'ଋ': 'ri', 'ଏ': 'e', 'ଐ': 'ai', 'ଓ': 'o', 'ଔ': 'au',
+}
+
+_ODIA_MATRAS = {
+    'ା': 'aa', 'ି': 'i', 'ୀ': 'ii', 'ୁ': 'u', 'ୂ': 'uu', 'ୃ': 'ri',
+    'େ': 'e', 'ୈ': 'ai', 'ୋ': 'o', 'ୌ': 'au',
+}
+
+_ODIA_CONSONANTS = {
+    'କ': 'ka', 'ଖ': 'kha', 'ଗ': 'ga', 'ଘ': 'gha', 'ଙ': 'nga',
+    'ଚ': 'cha', 'ଛ': 'chha', 'ଜ': 'ja', 'ଝ': 'jha', 'ଞ': 'nya',
+    'ଟ': 'ta', 'ଠ': 'tha', 'ଡ': 'da', 'ଢ': 'dha', 'ଣ': 'na',
+    'ତ': 'ta', 'ଥ': 'tha', 'ଦ': 'da', 'ଧ': 'dha', 'ନ': 'na',
+    'ପ': 'pa', 'ଫ': 'pha', 'ବ': 'ba', 'ଭ': 'bha', 'ମ': 'ma',
+    'ଯ': 'ya', 'ର': 'ra', 'ଲ': 'la', 'ଳ': 'la', 'ଵ': 'va',
+    'ଶ': 'sha', 'ଷ': 'sha', 'ସ': 'sa', 'ହ': 'ha',
+    'କ୍ଷ': 'ksha', 'ତ୍ର': 'tra', 'ଜ୍ଞ': 'gya',
+}
+
+_ODIA_SPECIALS = {
+    'ଂ': 'n', 'ଃ': 'h', 'ଁ': 'n',
+    '୦': '0', '୧': '1', '୨': '2', '୩': '3', '୪': '4',
+    '୫': '5', '୬': '6', '୭': '7', '୮': '8', '୯': '9',
+    '।': '. ', '॥': ' || ',
+}
+
+_ODIA_VIRAMA = '୍'
+
+
+def _transliterate_odia(text: str) -> str:
+    return _transliterate_brahmic(text, _ODIA_CONSONANTS, _ODIA_VOWELS,
+                                  _ODIA_MATRAS, _ODIA_SPECIALS, _ODIA_VIRAMA)
+
+
+# ---------------------------------------------------------------------------
+# Sinhala (U+0D80–U+0DFF)
+# ---------------------------------------------------------------------------
+
+_SINHALA_VOWELS = {
+    'අ': 'a', 'ආ': 'aa', 'ඇ': 'ae', 'ඈ': 'aae', 'ඉ': 'i', 'ඊ': 'ii',
+    'උ': 'u', 'ඌ': 'uu', 'ඍ': 'ru', 'එ': 'e', 'ඒ': 'ee', 'ඓ': 'ai',
+    'ඔ': 'o', 'ඕ': 'oo', 'ඖ': 'au',
+}
+
+_SINHALA_MATRAS = {
+    'ා': 'aa', 'ැ': 'ae', 'ෑ': 'aae', 'ි': 'i', 'ී': 'ii', 'ු': 'u',
+    'ූ': 'uu', 'ෘ': 'ru', 'ෙ': 'e', 'ේ': 'ee', 'ෛ': 'ai',
+    'ො': 'o', 'ෝ': 'oo', 'ෞ': 'au',
+}
+
+_SINHALA_CONSONANTS = {
+    'ක': 'ka', 'ඛ': 'kha', 'ග': 'ga', 'ඝ': 'gha', 'ඞ': 'nga',
+    'ච': 'cha', 'ඡ': 'chha', 'ජ': 'ja', 'ඣ': 'jha', 'ඤ': 'nya',
+    'ඥ': 'gnya', 'ට': 'ta', 'ඨ': 'tha', 'ඩ': 'da', 'ඪ': 'dha',
+    'ණ': 'na', 'ත': 'ta', 'ථ': 'tha', 'ද': 'da', 'ධ': 'dha',
+    'න': 'na', 'ප': 'pa', 'ඵ': 'pha', 'බ': 'ba', 'භ': 'bha',
+    'ම': 'ma', 'ය': 'ya', 'ර': 'ra', 'ල': 'la', 'ව': 'va',
+    'ශ': 'sha', 'ෂ': 'sha', 'ස': 'sa', 'හ': 'ha', 'ළ': 'la',
+    'ෆ': 'fa',
+}
+
+_SINHALA_SPECIALS = {
+    'ං': 'n', 'ඃ': 'h', 'ඁ': 'n',
+    '෦': '0', '෧': '1', '෨': '2', '෩': '3', '෪': '4',
+    '෫': '5', '෬': '6', '෭': '7', '෮': '8', '෯': '9',
+}
+
+_SINHALA_VIRAMA = '්'
+
+
+def _transliterate_sinhala(text: str) -> str:
+    return _transliterate_brahmic(text, _SINHALA_CONSONANTS, _SINHALA_VOWELS,
+                                  _SINHALA_MATRAS, _SINHALA_SPECIALS, _SINHALA_VIRAMA)
+
+
+# ---------------------------------------------------------------------------
 # Script detection
 # ---------------------------------------------------------------------------
 
@@ -632,6 +833,8 @@ def _detect_script(text: str) -> str:
         'cyrillic': 0, 'devanagari': 0, 'arabic': 0, 'japanese': 0,
         'korean': 0, 'greek': 0, 'hebrew': 0, 'thai': 0, 'latin': 0,
         'telugu': 0, 'tamil': 0, 'malayalam': 0, 'kannada': 0,
+        'bengali': 0, 'gurmukhi': 0, 'gujarati': 0, 'odia': 0,
+        'sinhala': 0, 'chinese': 0,
     }
     for ch in text:
         code = ord(ch)
@@ -643,6 +846,8 @@ def _detect_script(text: str) -> str:
             counts['arabic'] += 1
         elif 0x3040 <= code <= 0x30FF:
             counts['japanese'] += 1
+        elif 0x4E00 <= code <= 0x9FFF or 0x3400 <= code <= 0x4DBF:
+            counts['chinese'] += 1
         elif 0xAC00 <= code <= 0xD7A3:
             counts['korean'] += 1
         elif 0x0370 <= code <= 0x03FF:
@@ -659,6 +864,16 @@ def _detect_script(text: str) -> str:
             counts['malayalam'] += 1
         elif 0x0C80 <= code <= 0x0CFF:
             counts['kannada'] += 1
+        elif 0x0980 <= code <= 0x09FF:
+            counts['bengali'] += 1
+        elif 0x0A00 <= code <= 0x0A7F:
+            counts['gurmukhi'] += 1
+        elif 0x0A80 <= code <= 0x0AFF:
+            counts['gujarati'] += 1
+        elif 0x0B00 <= code <= 0x0B7F:
+            counts['odia'] += 1
+        elif 0x0D80 <= code <= 0x0DFF:
+            counts['sinhala'] += 1
         elif ch.isalpha():
             counts['latin'] += 1
 
@@ -666,6 +881,58 @@ def _detect_script(text: str) -> str:
     if not non_latin or max(non_latin.values()) == 0:
         return 'latin'
     return max(non_latin, key=non_latin.get)
+
+
+# Human-readable language / region for each detected script. Scripts shared by
+# several languages (Devanagari, Arabic, Bengali, …) list the main ones.
+_SCRIPT_LANGUAGES = {
+    'latin': 'Latin script (English / European / romanized)',
+    'cyrillic': 'Cyrillic (Russian, Ukrainian, Bulgarian, …)',
+    'devanagari': 'Devanagari (Hindi, Marathi, Nepali, Sanskrit)',
+    'arabic': 'Arabic script (Arabic, Urdu, Persian)',
+    'japanese': 'Japanese (Hiragana / Katakana)',
+    'chinese': 'Chinese (Han)',
+    'korean': 'Korean (Hangul)',
+    'greek': 'Greek',
+    'hebrew': 'Hebrew',
+    'thai': 'Thai',
+    'telugu': 'Telugu',
+    'tamil': 'Tamil',
+    'malayalam': 'Malayalam',
+    'kannada': 'Kannada',
+    'bengali': 'Bengali / Assamese',
+    'gurmukhi': 'Punjabi (Gurmukhi)',
+    'gujarati': 'Gujarati',
+    'odia': 'Odia (Oriya)',
+    'sinhala': 'Sinhala',
+}
+
+# Indic scripts specifically — surfaced as "Indic language detected".
+INDIC_SCRIPTS = {
+    'devanagari', 'bengali', 'gurmukhi', 'gujarati', 'odia',
+    'tamil', 'telugu', 'kannada', 'malayalam', 'sinhala',
+}
+
+
+def detect_language(text: str) -> Dict[str, object]:
+    """Detect the script/language of lyrics text.
+
+    Returns a dict with the dominant ``script``, a human-readable
+    ``language`` name, whether it is an ``indic`` script, whether it
+    ``needs_transliteration``, and the per-script character counts.
+    """
+    counts: Dict[str, int] = {}
+    for line in (text or "").split('\n'):
+        script = _detect_script(line)
+        counts[script] = counts.get(script, 0) + sum(1 for c in line if c.isalpha())
+    script = _detect_script(text or "")
+    return {
+        "script": script,
+        "language": _SCRIPT_LANGUAGES.get(script, script),
+        "indic": script in INDIC_SCRIPTS,
+        "needs_transliteration": bool(text) and script != 'latin',
+        "counts": counts,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -685,6 +952,11 @@ _TRANLITERATORS = {
     'tamil': _transliterate_tamil,
     'malayalam': _transliterate_malayalam,
     'kannada': _transliterate_kannada,
+    'bengali': _transliterate_bengali,
+    'gurmukhi': _transliterate_gurmukhi,
+    'gujarati': _transliterate_gujarati,
+    'odia': _transliterate_odia,
+    'sinhala': _transliterate_sinhala,
 }
 
 

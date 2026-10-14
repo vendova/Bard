@@ -712,7 +712,8 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        sync_sources: bool = False,
                        min_shot_seconds: float = 2.0,
                        onset_snap_strength: float = 1.0,
-                       whole_song: bool = False) -> StatusResult:
+                       whole_song: bool = False,
+                       burn_lyrics: bool = False) -> StatusResult:
     total_started = time.perf_counter()
     try:
         parallel_workers = PARALLEL_WORKERS
@@ -1011,9 +1012,15 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
         )
 
         # ── Lyrics overlay ─────────────────────────────────────────────
-        # If lyrics text was provided, generate an ASS subtitle file and
-        # burn it into the rendered video with the selected font combo.
-        if lyrics_text and lyrics_text.strip():
+        # Burning lyrics into the video is opt-in ("Burn lyrics into video").
+        # The LRC/timestamp output is produced separately by the "Generate LRC"
+        # button, so leaving this off gives a clean render with the LRC saved.
+        if lyrics_text and lyrics_text.strip() and not burn_lyrics:
+            console_logger.line(
+                "🎤 Lyrics provided but burn-in is off — skipping overlay "
+                "(use 'Generate LRC' for timestamps, or tick 'Burn lyrics into video')."
+            )
+        if lyrics_text and lyrics_text.strip() and burn_lyrics:
             try:
                 from lyrics_engine import process_lyrics, burn_lyrics_into_video
                 from font_presets import FONTS_DIR as _fd
@@ -1341,6 +1348,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  min_shot_seconds: float = 2.0,
                  onset_snap_strength: float = 1.0,
                  whole_song: bool = False,
+                 burn_lyrics: bool = False,
                  *,
                  regenerate: bool = False,
                  resume_job_id: str | None = None,
@@ -1374,7 +1382,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
             qwen_semantics, draft_mode, youtube_url, overlay_url,
             stabilize, stabilize_smoothing, interpolate, interpolate_fps,
             rife, remove_dead_space, export_timeline, sync_sources,
-            min_shot_seconds, onset_snap_strength, whole_song,
+            min_shot_seconds, onset_snap_strength, whole_song, burn_lyrics,
             regenerate=regenerate, resume_job_id=resume_job_id,
         )
     finally:
@@ -1426,6 +1434,7 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                  min_shot_seconds: float = 2.0,
                  onset_snap_strength: float = 1.0,
                  whole_song: bool = False,
+                 burn_lyrics: bool = False,
                  *,
                  regenerate: bool = False,
                  resume_job_id: str | None = None,
@@ -1456,6 +1465,8 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                 onset_snap_strength = float(rec["onset_snap_strength"])
             if rec.get("whole_song") is not None:
                 whole_song = bool(rec["whole_song"])
+            if rec.get("burn_lyrics") is not None:
+                burn_lyrics = bool(rec["burn_lyrics"])
             if rec.get("seed"):
                 session_state["_resume_seed"] = rec["seed"]
             _jobs.update_job(job_id, status=_jobs.STATUS_RUNNING, stage="resuming")
@@ -1474,6 +1485,7 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                 "min_shot_seconds": float(min_shot_seconds),
                 "onset_snap_strength": float(onset_snap_strength),
                 "whole_song": bool(whole_song),
+                "burn_lyrics": bool(burn_lyrics),
             })
             try:
                 persisted = _jobs.persist_inputs(job_id, audio_file, video_files or [], zip_file)
@@ -1599,6 +1611,7 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                     min_shot_seconds=min_shot_seconds,
                     onset_snap_strength=onset_snap_strength,
                     whole_song=whole_song,
+                    burn_lyrics=burn_lyrics,
                 )
         except Exception as e:
             console_logger.line(f"Error: {e}")
@@ -1685,6 +1698,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
                       min_shot_seconds: float = 2.0,
                       onset_snap_strength: float = 1.0,
                       whole_song: bool = False,
+                      burn_lyrics: bool = False,
                       ) -> Iterator[StatusResult]:
     """Re-render with updated settings, reusing cached beat analysis.
 
@@ -1713,6 +1727,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
             min_shot_seconds=min_shot_seconds,
             onset_snap_strength=onset_snap_strength,
             whole_song=whole_song,
+            burn_lyrics=burn_lyrics,
             regenerate=False, resume_job_id=None,
         )
         return
@@ -1739,8 +1754,66 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
         min_shot_seconds=min_shot_seconds,
         onset_snap_strength=onset_snap_strength,
         whole_song=whole_song,
+        burn_lyrics=burn_lyrics,
         regenerate=True, resume_job_id=None,
     )
+
+
+def generate_lrc_output(lyrics_text, audio_file, session_state):
+    """Detect the lyric language and emit a timestamped LRC (no video render).
+
+    Timestamps come from the pasted LRC when present, otherwise they are
+    derived from the cached beat grid or the audio duration. When the lyrics
+    box is empty and a speech-to-text backend is installed, the audio is
+    transcribed first.
+    """
+    import os
+    import lyrics_engine
+
+    session_state = session_state or {}
+    audio_duration = 180.0
+    beat_times = None
+    beat_info = session_state.get("cached_beat_info") or {}
+    if beat_info.get("audio_duration"):
+        audio_duration = float(beat_info["audio_duration"])
+    elif beat_info.get("times"):
+        beat_times = list(beat_info["times"])
+        audio_duration = max(beat_times) + 5.0
+
+    local_audio = None
+    if not (lyrics_text and lyrics_text.strip()):
+        local_audio = session_state.get("local_audio_path")
+        if not local_audio and audio_file:
+            local_audio = audio_file
+
+    out_dir = session_state.get("session_dir") or "/tmp"
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError:
+        out_dir = "/tmp"
+
+    artifact = lyrics_engine.build_lyrics_artifact(
+        lyrics_text=lyrics_text or "",
+        audio_duration=audio_duration,
+        beat_times=beat_times,
+        audio_file=local_audio,
+        output_dir=out_dir,
+    )
+
+    if not artifact["lines"]:
+        note = artifact["note"] or (
+            "No lyrics found. Paste lyrics, or install a speech-to-text "
+            "backend to auto-transcribe from the audio."
+        )
+        return f"⚠️ {note}", "", None
+
+    script = artifact["script"]
+    flag = " (Indic language detected)" if artifact["indic"] else ""
+    lang_line = f"{artifact['language']}{flag} · {len(artifact['lines'])} lines · source: {artifact['source']}"
+    if artifact["note"]:
+        lang_line += f" · {artifact['note']}"
+
+    return lang_line, artifact["lrc_text"], (artifact["lrc_path"] or None)
 
 
 def cleanup_on_startup():
@@ -1945,6 +2018,18 @@ def create_ui() -> gr.Blocks:
                         lines=1,
                         elem_id='overlay-link-input',
                     )
+                    burn_lyrics_enabled = gr.Checkbox(
+                        value=False, label=LABEL_BURN_LYRICS, info=INFO_BURN_LYRICS,
+                    )
+                    lrc_btn = gr.Button(LABEL_LRC_BUTTON, variant='secondary')
+                    lrc_language = gr.Textbox(
+                        label=LABEL_LRC_LANGUAGE, interactive=False, lines=1,
+                    )
+                    lrc_output = gr.Textbox(
+                        label=LABEL_LRC_OUTPUT, info=INFO_LRC_OUTPUT,
+                        lines=8, max_lines=20,
+                    )
+                    lrc_file = gr.File(label='Download .lrc', interactive=False)
 
                 with gr.Row():
                     process_btn = gr.Button('🎬 Create Music Video', variant='primary', size='lg')
@@ -2014,6 +2099,7 @@ def create_ui() -> gr.Blocks:
             min_shot_slider,
             onset_snap_slider,
             whole_song_enabled,
+            burn_lyrics_enabled,
         ]
         _shared_outputs = [video_output, status_output, session_state, download_btn]
 
@@ -2051,6 +2137,15 @@ def create_ui() -> gr.Blocks:
         ).then(
             fn=None,
             js=_AUTO_DOWNLOAD_JS,
+        )
+
+        # "Generate LRC" — detect the language and emit timestamped lyrics
+        # without rendering. Output first; burning onto the video is separate.
+        lrc_btn.click(
+            fn=generate_lrc_output,
+            inputs=[lyrics_text, audio_input, session_state],
+            outputs=[lrc_language, lrc_output, lrc_file],
+            show_progress='hidden',
         )
 
         # ── Resume / refresh-persistence wiring ─────────────────────────

@@ -43,6 +43,22 @@ Health: `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:12000/`
   `_resolve_duration_cap` so the output keeps the full audio length and reuses
   source moments (`_ensure_candidate_coverage` tops up the Smart Sync candidate
   pool). Off by default; an explicit `BEATSYNC_MAX_OUTPUT_SECONDS` still caps.
+- **Lyrics: LRC first, burn optional** (Lyrics section): "📝 Generate LRC"
+  calls `gui.generate_lrc_output` → `lyrics_engine.build_lyrics_artifact`,
+  which detects the script/language (`transliteration.detect_language`),
+  parses pasted LRC or auto-times plain text, and writes a `.lrc` shown in the
+  UI + offered as a download. Burning captions onto the video is a separate
+  opt-in checkbox (`burn_lyrics`), default off; it is threaded through
+  `process_video`/`_render_video_job`/`_process_video_impl`/`regenerate_video`
+  and persisted for resume.
+- **Indic + more scripts** (`transliteration.py`): detection/transliteration
+  now covers Bengali, Gurmukhi, Gujarati, Odia, Sinhala (plus the existing
+  Devanagari/Telugu/Tamil/Malayalam/Kannada) and Han. `detect_language()`
+  returns script/language/indic flags; `INDIC_SCRIPTS` lists the Indic set.
+- **Optional ASR** (`lyrics_asr.py`): when the lyrics box is empty and a
+  backend is installed (faster-whisper → whisper → vosk, see
+  `requirements-lyrics.txt`), the audio is transcribed into timed lines.
+  Nothing is bundled; without a backend the UI reports a clear note.
 - **Shot pacing** (`auto_mode.AutoWaveConfig.min_shot_seconds`, GUI
   "Minimum shot length"): a floor (default 2.0s) applied on top of the
   energy-based min-intervals in `analyze_beats_auto` via

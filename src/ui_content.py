@@ -401,6 +401,21 @@ INFO_WHOLE_SONG = (
     "On: keep the full music length and reuse source moments to fill it — "
     "useful for a full-length track when you have limited clips."
 )
+LABEL_BURN_LYRICS = "🔥 Burn lyrics into the video (optional)"
+INFO_BURN_LYRICS = (
+    "Off (default): lyrics are only used to generate the timestamped LRC "
+    "output — the rendered video stays clean. On: also burn the animated "
+    "captions into the video using the selected font combo."
+)
+LABEL_LRC_BUTTON = "📝 Generate LRC (detect language + timestamps)"
+LABEL_LRC_LANGUAGE = "Detected language / script"
+LABEL_LRC_OUTPUT = "Timed lyrics (LRC)"
+INFO_LRC_OUTPUT = (
+    "Timestamps are auto-derived from the beat grid when you paste plain "
+    "lyrics, or kept as-is from an LRC you paste. Copy them out or download "
+    "the .lrc file. Leave the lyrics box empty and install a speech-to-text "
+    "backend to auto-transcribe instead."
+)
 LABEL_INTERPOLATE = "🎞️ Smooth frame rate (interpolation)"
 INFO_INTERPOLATE = (
     "Motion-compensated minterpolate doubles the output frame rate for buttery "
@@ -456,7 +471,12 @@ INFO_RESUME_SECTION = (
 LABEL_LYRICS = "🎤 Lyrics Overlay"
 INFO_LYRICS = "Paste song lyrics (any language). Auto-transliterates to English and syncs to beats"
 LABEL_LYRICS_TEXT = "Song Lyrics (plain text or LRC with timestamps)"
-INFO_LYRICS_TEXT = "Supports LRC [mm:ss.xx] timestamps or plain text (auto-distributed). Any language → English transliteration"
+INFO_LYRICS_TEXT = (
+    "Supports LRC [mm:ss.xx] timestamps or plain text (auto-distributed). "
+    "Indic and other non-Latin scripts are detected and transliterated to "
+    "English. Click 'Generate LRC' for timestamped output; leave empty and "
+    "install a speech-to-text backend to auto-transcribe from the audio."
+)
 LABEL_FONT_COMBO = "Font Style Combo (100 presets)"
 INFO_FONT_COMBO = "Select a font combo for the lyrics overlay. Each combo pairs primary + secondary fonts with animations"
 LABEL_TRANSITION_PRESET = "Transition Preset (100 combos)"

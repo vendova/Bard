@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from transliteration import transliterate, needs_transliteration
+from transliteration import transliterate, needs_transliteration, detect_language
 from font_presets import FontCombo, get_combo_by_name, get_combo, FONTS_DIR
 from transition_presets import TransitionPreset, get_preset_by_name, get_preset
 
@@ -177,6 +177,135 @@ def apply_transliteration(lines: List[LyricLine]) -> List[LyricLine]:
         else:
             line.transliterated = line.text
     return lines
+
+
+# ---------------------------------------------------------------------------
+# LRC output (timestamps the user can read / reuse)
+# ---------------------------------------------------------------------------
+
+def lrc_timestamp(t: float) -> str:
+    """Format seconds as an LRC tag: [mm:ss.xx]."""
+    t = max(0.0, float(t))
+    mins = int(t // 60)
+    secs = int(t % 60)
+    cs = int(round((t - int(t)) * 100))
+    if cs == 100:          # rounding can push .xx to 1.00
+        cs = 0
+        secs += 1
+        if secs == 60:
+            secs = 0
+            mins += 1
+    return f"[{mins:02d}:{secs:02d}.{cs:02d}]"
+
+
+def format_lrc(lines: List[LyricLine], title: str = "",
+               include_transliteration: bool = False) -> str:
+    """Render lyric lines as an LRC document with ``[mm:ss.xx]`` timestamps.
+
+    ``include_transliteration`` appends the romanized text in parentheses so a
+    viewer can read a non-Latin song's pronunciation while the original script
+    stays the primary line.
+    """
+    header = ["[re:BeatSync Engine]"]
+    if title:
+        header.insert(0, f"[ti:{title}]")
+    body = []
+    for line in lines:
+        text = line.text.strip()
+        if not text:
+            continue
+        if include_transliteration and line.transliterated and line.transliterated != line.text:
+            text = f"{text} ({line.transliterated.strip()})"
+        body.append(f"{lrc_timestamp(line.start_time)}{text}")
+    return "\n".join(header + body) + "\n"
+
+
+def write_lrc_file(lines: List[LyricLine], output_path: str, title: str = "",
+                   include_transliteration: bool = False) -> str:
+    """Write lyric lines to an LRC file and return its path."""
+    with open(output_path, "w", encoding="utf-8") as fh:
+        fh.write(format_lrc(lines, title=title,
+                            include_transliteration=include_transliteration))
+    return output_path
+
+
+def lines_from_segments(segments: List[Dict]) -> List[LyricLine]:
+    """Build LyricLine objects from ``{start, end, text}`` ASR segments."""
+    lines: List[LyricLine] = []
+    for seg in segments:
+        text = str(seg.get("text", "")).strip()
+        if not text:
+            continue
+        start = float(seg.get("start", 0.0))
+        end = float(seg.get("end", start + 3.0))
+        lines.append(LyricLine(text=text, start_time=start, end_time=max(end, start + 0.2)))
+    return lines
+
+
+def build_lyrics_artifact(
+    lyrics_text: str,
+    audio_duration: float,
+    beat_times: Optional[List[float]] = None,
+    audio_file: Optional[str] = None,
+    output_dir: str = "/tmp",
+    title: str = "",
+    language: Optional[str] = None,
+    allow_asr: bool = True,
+) -> Dict[str, object]:
+    """Detect the language, produce timed lyric lines, and write an LRC file.
+
+    When ``lyrics_text`` is empty and ``allow_asr`` is set, an installed
+    speech-to-text backend (see :mod:`lyrics_asr`) is used to transcribe
+    ``audio_file`` into timed lines. Otherwise the pasted lyrics are parsed
+    (LRC tags honoured, plain text auto-distributed across the song).
+
+    Returns a dict with ``lines``, ``lrc_text``, ``lrc_path``, ``language``,
+    ``script``, ``indic``, ``source`` ("lyrics" | "asr" | "none") and ``note``.
+    """
+    import lyrics_asr
+
+    lines: List[LyricLine] = []
+    source = "none"
+    note = ""
+
+    if lyrics_text and lyrics_text.strip():
+        lines = parse_lyrics(lyrics_text, audio_duration, beat_times)
+        source = "lyrics" if lines else "none"
+    elif allow_asr and audio_file and lyrics_asr.is_available():
+        try:
+            segments = lyrics_asr.transcribe(audio_file, language=language)
+            lines = lines_from_segments(segments)
+            source = "asr" if lines else "none"
+            note = f"Transcribed with {lyrics_asr.available_backend()}"
+        except Exception as exc:                     # never fail the render
+            note = f"Auto-transcription failed: {exc}"
+    elif allow_asr and audio_file:
+        note = ("No speech-to-text backend installed — paste lyrics manually "
+                "(pip install -r requirements-lyrics.txt).")
+
+    if lines:
+        lines = apply_transliteration(lines)
+
+    detected = detect_language(lyrics_text) if (lyrics_text and lyrics_text.strip()) \
+        else detect_language(" ".join(l.text for l in lines))
+
+    lrc_text = format_lrc(lines, title=title) if lines else ""
+    lrc_path = ""
+    if lrc_text:
+        lrc_path = os.path.join(output_dir, f"lyrics_{int(time.time())}.lrc")
+        with open(lrc_path, "w", encoding="utf-8") as fh:
+            fh.write(lrc_text)
+
+    return {
+        "lines": lines,
+        "lrc_text": lrc_text,
+        "lrc_path": lrc_path,
+        "language": detected["language"],
+        "script": detected["script"],
+        "indic": detected["indic"],
+        "source": source,
+        "note": note,
+    }
 
 
 # ---------------------------------------------------------------------------
