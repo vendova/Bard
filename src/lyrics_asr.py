@@ -54,6 +54,70 @@ _CONVERTED_DIR = os.environ.get(
     "BEATSYNC_ASR_CACHE", os.path.join(os.path.expanduser("~"), ".cache", "beatsync_asr")
 )
 
+# Line-splitting thresholds: Whisper tends to emit long segments (especially for
+# sung audio), so we regroup word-level timestamps into singable lines. A new
+# line starts at a natural pause, or when a line grows too long.
+_LINE_MAX_GAP = float(os.environ.get("BEATSYNC_LRC_LINE_GAP", "0.45"))
+_LINE_MAX_DUR = float(os.environ.get("BEATSYNC_LRC_LINE_MAX_DUR", "8.0"))
+_LINE_MAX_CHARS = int(os.environ.get("BEATSYNC_LRC_LINE_MAX_CHARS", "60"))
+
+# VAD: how much silence marks a phrase boundary (Whisper's default is 2000 ms).
+_VAD_MIN_SILENCE_MS = int(os.environ.get("BEATSYNC_LRC_VAD_SILENCE_MS", "500"))
+
+
+def _line_from_words(words: List[Dict[str, object]]) -> Dict[str, object]:
+    return {
+        "start": float(words[0]["start"]),
+        "end": float(words[-1]["end"]),
+        "text": " ".join(str(w["text"]) for w in words).strip(),
+    }
+
+
+def _words_to_lines(words: List[Dict[str, object]],
+                    max_gap: Optional[float] = None,
+                    max_dur: Optional[float] = None,
+                    max_chars: Optional[int] = None) -> List[Dict[str, object]]:
+    """Group word dicts (``{start, end, text}``) into lines at natural pauses."""
+    max_gap = _LINE_MAX_GAP if max_gap is None else max_gap
+    max_dur = _LINE_MAX_DUR if max_dur is None else max_dur
+    max_chars = _LINE_MAX_CHARS if max_chars is None else max_chars
+
+    lines: List[Dict[str, object]] = []
+    cur: List[Dict[str, object]] = []
+    cur_start: Optional[float] = None
+    for w in words:
+        text = str(w.get("text") or "").strip()
+        if not text:
+            continue
+        if cur_start is None:
+            cur_start = float(w["start"])
+        if cur:
+            gap = float(w["start"]) - float(cur[-1]["end"])
+            joined = len(" ".join(str(x["text"]) for x in cur)) + 1 + len(text)
+            too_long = (float(w["end"]) - cur_start) > max_dur
+            if gap >= max_gap or joined > max_chars or too_long:
+                lines.append(_line_from_words(cur))
+                cur = []
+                cur_start = float(w["start"])
+        cur.append({"start": float(w["start"]), "end": float(w["end"]), "text": text})
+    if cur:
+        lines.append(_line_from_words(cur))
+    return lines
+
+
+def _filter_implausible_lines(lines: List[Dict[str, object]],
+                              max_chars_per_sec: float = 30.0,
+                              short_line_sec: float = 1.0) -> List[Dict[str, object]]:
+    """Drop Whisper hallucinations on silence: short blips of impossibly dense text."""
+    out: List[Dict[str, object]] = []
+    for line in lines:
+        dur = max(0.01, float(line["end"]) - float(line["start"]))
+        cps = len(str(line["text"])) / dur
+        if dur < short_line_sec and cps > max_chars_per_sec:
+            continue
+        out.append(line)
+    return out
+
 
 def available_backend() -> Optional[str]:
     """Return the name of the first installed ASR backend, or ``None``."""
@@ -207,7 +271,14 @@ def _transcribe_faster_whisper(audio_file: str, language: Optional[str],
     log(f"Decoded {len(audio) / 16000:.1f}s of audio; transcribing…")
 
     segments, info = model.transcribe(
-        audio, language=language or None, vad_filter=True,
+        audio, language=language or None,
+        word_timestamps=True,
+        vad_filter=True,
+        # A shorter silence threshold than the 2 s default keeps phrases apart,
+        # which matters for sung audio that otherwise collapses into long blobs.
+        vad_parameters=dict(min_silence_duration_ms=_VAD_MIN_SILENCE_MS),
+        # Drop repeated/hallucinated text Whisper emits over long silences.
+        hallucination_silence_threshold=2.0,
         condition_on_previous_text=False, beam_size=5,
     )
     detected = getattr(info, "language", None)
@@ -218,8 +289,19 @@ def _transcribe_faster_whisper(audio_file: str, language: Optional[str],
         text = (s.text or "").strip()
         if not text:
             continue
-        out.append({"start": float(s.start), "end": float(s.end), "text": text})
-        log(f"  [{s.start:6.2f}s] {text[:70]}")
+        words = getattr(s, "words", None) or []
+        if words:
+            lines = _words_to_lines(
+                [{"start": w.start, "end": w.end, "text": w.word} for w in words]
+            )
+            lines = _filter_implausible_lines(lines)
+            for line in lines:
+                if line["text"]:
+                    out.append(line)
+                    log(f"  [{line['start']:6.2f}s] {line['text'][:70]}")
+        else:
+            out.append({"start": float(s.start), "end": float(s.end), "text": text})
+            log(f"  [{s.start:6.2f}s] {text[:70]}")
     log(f"Transcribed {len(out)} line(s)")
     return out
 

@@ -43,6 +43,15 @@ Health: `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:12000/`
   `load_as_float16=True, low_cpu_mem_usage=True` — a plain large-v2 conversion
   OOMs a 15 GB CPU box. Env overrides: `BEATSYNC_WHISPER_MODEL`,
   `BEATSYNC_WHISPER_COMPUTE`.
+- **LRC line splitting**: Whisper emits long segments (a whole verse, or a
+  single blob for sung audio), so `lyrics_asr` transcribes with
+  `word_timestamps=True` and regroups words into singable lines at natural
+  pauses (`_words_to_lines`; tunable via `BEATSYNC_LRC_LINE_GAP`,
+  `BEATSYNC_LRC_LINE_MAX_DUR`, `BEATSYNC_LRC_LINE_MAX_CHARS`). VAD
+  `min_silence_duration_ms` is lowered from the 2 s default
+  (`BEATSYNC_LRC_VAD_SILENCE_MS`), `hallucination_silence_threshold=2.0` plus
+  `_filter_implausible_lines` drop the date/time text Whisper invents over
+  trailing silence.
 - **Lyric video link** (Lyrics section): paste a download link to a
   black-background lyric clip. It is blended over the edited clips with a
   `lighten` effect and, when no audio file is uploaded, its own audio is
