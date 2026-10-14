@@ -732,7 +732,8 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        onset_snap_strength: float = 1.0,
                        whole_song: bool = False,
                        burn_lyrics: bool = False,
-                       neural_beats: bool = False) -> StatusResult:
+                       neural_beats: bool = False,
+                       force_neural_beats: bool = False) -> StatusResult:
     total_started = time.perf_counter()
     try:
         parallel_workers = PARALLEL_WORKERS
@@ -947,7 +948,8 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
         _pacing_changed = session_state.get('cached_min_shot') != float(min_shot_seconds)
         _snap_changed = session_state.get('cached_onset_snap') != float(onset_snap_strength)
         _neural_changed = session_state.get('cached_neural_beats') != bool(neural_beats)
-        _cache_stale = _qwen_changed or _pacing_changed or _snap_changed or _neural_changed
+        _force_changed = session_state.get('cached_force_neural_beats') != bool(force_neural_beats)
+        _cache_stale = _qwen_changed or _pacing_changed or _snap_changed or _neural_changed or _force_changed
         _skip_analysis = False
         if regenerate and cached_beat_info and not _cache_stale:
             selected_beats = session_state['cached_selected_beats']
@@ -964,7 +966,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             _beat_key = None
             _disk_hit = False
             if _jobs is not None:
-                _beat_key = _jobs.beat_cache_key(local_audio_path, local_video_paths, qwen_semantics, min_shot_seconds, onset_snap_strength, neural_beats)
+                _beat_key = _jobs.beat_cache_key(local_audio_path, local_video_paths, qwen_semantics, min_shot_seconds, onset_snap_strength, neural_beats, force_neural_beats)
                 _hit = _jobs.load_beat_cache(_beat_key)
                 if _hit is not None:
                     selected_beats, beat_info = _hit
@@ -977,6 +979,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                     session_state['cached_min_shot'] = float(min_shot_seconds)
                     session_state['cached_onset_snap'] = float(onset_snap_strength)
                     session_state['cached_neural_beats'] = bool(neural_beats)
+                    session_state['cached_force_neural_beats'] = bool(force_neural_beats)
                     if progress_callback:
                         progress_callback(_stage_status(6))
                     _stage5_summary(console_logger, beat_info.get("video_analysis"))
@@ -997,6 +1000,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                     min_shot_seconds=min_shot_seconds,
                     onset_snap_strength=onset_snap_strength,
                     enable_neural_beats=neural_beats,
+                    force_neural_beats=force_neural_beats,
                     progress_callback=progress_callback,
                     console_callback=lambda stage, message: console_logger.stage_line(stage, message) if console_logger else None,
                 )
@@ -1011,6 +1015,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                 session_state['cached_min_shot'] = float(min_shot_seconds)
                 session_state['cached_onset_snap'] = float(onset_snap_strength)
                 session_state['cached_neural_beats'] = bool(neural_beats)
+                session_state['cached_force_neural_beats'] = bool(force_neural_beats)
                 _stage5_summary(console_logger, beat_info.get("video_analysis"))
                 # Persist to disk so a restart can resume.
                 if _beat_key and _jobs is not None:
@@ -1307,8 +1312,11 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             audio_duration=beat_info.get('audio_duration'),
             output_fps=output_fps,
             total_processing_seconds=total_processing_seconds,
-            processing_label=processing_label
+            processing_label=processing_label,
+            neural_beats=beat_info.get('neural_beats'),
         )
+        if console_logger:
+            console_logger.line(format_beat_detection_line(beat_info.get('neural_beats')))
         # Return preview path for display + download, keep session_state intact
         # Validate final output — guard against 0-byte / missing files
         # so the UI never serves a broken video.
@@ -1378,6 +1386,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  whole_song: bool = False,
                  burn_lyrics: bool = False,
                  neural_beats: bool = False,
+                 force_neural_beats: bool = False,
                  *,
                  regenerate: bool = False,
                  resume_job_id: str | None = None,
@@ -1412,7 +1421,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
             stabilize, stabilize_smoothing, interpolate, interpolate_fps,
             rife, remove_dead_space, export_timeline, sync_sources,
             min_shot_seconds, onset_snap_strength, whole_song, burn_lyrics,
-            neural_beats,
+            neural_beats, force_neural_beats,
             regenerate=regenerate, resume_job_id=resume_job_id,
         )
     finally:
@@ -1466,6 +1475,7 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                  whole_song: bool = False,
                  burn_lyrics: bool = False,
                  neural_beats: bool = False,
+                 force_neural_beats: bool = False,
                  *,
                  regenerate: bool = False,
                  resume_job_id: str | None = None,
@@ -1500,6 +1510,8 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                 burn_lyrics = bool(rec["burn_lyrics"])
             if rec.get("neural_beats") is not None:
                 neural_beats = bool(rec["neural_beats"])
+            if rec.get("force_neural_beats") is not None:
+                force_neural_beats = bool(rec["force_neural_beats"])
             if rec.get("seed"):
                 session_state["_resume_seed"] = rec["seed"]
             _jobs.update_job(job_id, status=_jobs.STATUS_RUNNING, stage="resuming")
@@ -1520,6 +1532,7 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                 "whole_song": bool(whole_song),
                 "burn_lyrics": bool(burn_lyrics),
                 "neural_beats": bool(neural_beats),
+                "force_neural_beats": bool(force_neural_beats),
             })
             try:
                 persisted = _jobs.persist_inputs(job_id, audio_file, video_files or [], zip_file)
@@ -1647,6 +1660,7 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                     whole_song=whole_song,
                     burn_lyrics=burn_lyrics,
                     neural_beats=neural_beats,
+                    force_neural_beats=force_neural_beats,
                 )
         except Exception as e:
             console_logger.line(f"Error: {e}")
@@ -1735,6 +1749,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
                       whole_song: bool = False,
                       burn_lyrics: bool = False,
                       neural_beats: bool = False,
+                      force_neural_beats: bool = False,
                       ) -> Iterator[StatusResult]:
     """Re-render with updated settings, reusing cached beat analysis.
 
@@ -1765,6 +1780,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
             whole_song=whole_song,
             burn_lyrics=burn_lyrics,
             neural_beats=neural_beats,
+            force_neural_beats=force_neural_beats,
             regenerate=False, resume_job_id=None,
         )
         return
@@ -1793,6 +1809,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
         whole_song=whole_song,
         burn_lyrics=burn_lyrics,
         neural_beats=neural_beats,
+        force_neural_beats=force_neural_beats,
         regenerate=True, resume_job_id=None,
     )
 
@@ -2108,6 +2125,12 @@ def create_ui() -> gr.Blocks:
                         info=INFO_NEURAL_BEATS,
                         interactive=bool(NEURAL_BEATS_AVAILABLE),
                     )
+                    force_neural_beats_enabled = gr.Checkbox(
+                        value=False,
+                        label=LABEL_FORCE_NEURAL_BEATS,
+                        info=INFO_FORCE_NEURAL_BEATS,
+                        interactive=bool(NEURAL_BEATS_AVAILABLE),
+                    )
                     whole_song_enabled = gr.Checkbox(value=False, label=LABEL_WHOLE_SONG, info=INFO_WHOLE_SONG)
 
                 with gr.Accordion(LABEL_LYRICS_SECTION, open=False):
@@ -2239,6 +2262,7 @@ def create_ui() -> gr.Blocks:
             whole_song_enabled,
             burn_lyrics_enabled,
             neural_beats_enabled,
+            force_neural_beats_enabled,
         ]
         _shared_outputs = [video_output, status_output, session_state, download_btn]
 

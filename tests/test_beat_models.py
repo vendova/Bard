@@ -170,6 +170,56 @@ def test_analyze_beats_auto_uses_neural_grid(tmp_path, tcn_checkpoint, refiner_c
     assert info["rhythm_data"]["is_bar_anchor"].any()
 
 
+def test_force_neural_beats_raises_when_unavailable(tmp_path, monkeypatch):
+    """force_neural_beats must fail loudly instead of falling back to librosa."""
+    from auto_mode import analyze_beats_auto
+
+    audio = tmp_path / "click.wav"
+    _click_track(audio)
+    monkeypatch.setattr(beat_models, "torch_available", lambda: False)
+
+    with pytest.raises(RuntimeError, match="forced on"):
+        analyze_beats_auto(
+            str(audio), video_files=[], enable_video_analysis=False,
+            enable_qwen_semantics=False, min_shot_seconds=2.0,
+            enable_neural_beats=True, force_neural_beats=True,
+        )
+
+
+def test_force_neural_beats_falls_back_when_not_forced(tmp_path, monkeypatch):
+    """Without force, an unavailable backend still degrades to librosa."""
+    from auto_mode import analyze_beats_auto
+
+    audio = tmp_path / "click.wav"
+    _click_track(audio)
+    monkeypatch.setattr(beat_models, "torch_available", lambda: False)
+
+    _, info = analyze_beats_auto(
+        str(audio), video_files=[], enable_video_analysis=False,
+        enable_qwen_semantics=False, min_shot_seconds=2.0,
+        enable_neural_beats=True, force_neural_beats=False,
+    )
+    neural = info["neural_beats"]
+    assert neural["enabled"] is True
+    assert neural["forced"] is False
+    assert neural["used"] is False
+    assert len(info["times"]) >= 2
+
+
+def test_beat_detection_line_reports_detector():
+    from ui_content import format_beat_detection_line
+
+    assert "Neural TCN + Transformer refiner" in format_beat_detection_line(
+        {"enabled": True, "used": True, "backend": "tcn+refiner", "refined": True})
+    assert "refiner not applied" in format_beat_detection_line(
+        {"enabled": True, "used": True, "backend": "tcn", "refined": False})
+    line = format_beat_detection_line(
+        {"enabled": True, "forced": True, "used": False, "notes": "no torch"})
+    assert "librosa" in line and "forced" in line
+    assert "neural detection off" in format_beat_detection_line(
+        {"enabled": False, "used": False})
+
+
 def test_detect_beat_grid_falls_back_without_torch(monkeypatch):
     monkeypatch.setattr(beat_models, "torch_available", lambda: False)
     result = beat_models.detect_beat_grid("ignored.wav")

@@ -319,6 +319,7 @@ def analyze_beats_auto(audio_file: str, start_time: float = 0.0,
                        min_shot_seconds: float = None,
                        onset_snap_strength: float = None,
                        enable_neural_beats: bool = False,
+                       force_neural_beats: bool = False,
                        progress_callback: Callable[[str], None] | None = None,
                        console_callback: Callable[[int, str], None] | None = None) -> Tuple[np.ndarray, Dict]:
     """
@@ -360,6 +361,7 @@ def analyze_beats_auto(audio_file: str, start_time: float = 0.0,
 
     neural = {"used": False, "beats": None, "tempo": None, "downbeats": None,
               "backend": "unavailable", "notes": ""}
+    neural_forced = bool(force_neural_beats and enable_neural_beats)
     if enable_neural_beats:
         print("   🧠 Step 1a: Neural beat detection (TCN + refiner)...")
         neural = _detect_neural_beats(audio_file, y, sr, cfg, use_gpu)
@@ -383,9 +385,21 @@ def analyze_beats_auto(audio_file: str, start_time: float = 0.0,
                         f"({neural['backend']})")
     else:
         if enable_neural_beats:
-            print(f"      ⚠️  Neural backend unavailable, using librosa grid: {neural['notes']}")
+            reason = neural.get("notes") or "backend unavailable"
+            if neural_forced:
+                # Explicitly opted in to "no fallback": stop rather than
+                # silently shipping a librosa-grid render.
+                print(f"      ❌ Neural beats forced but unavailable: {reason}")
+                _notify_console(console_callback, 1,
+                                f"Neural beats forced but unavailable: {reason}")
+                raise RuntimeError(
+                    "Neural beat detection was forced on, but it could not run: "
+                    f"{reason}. Install the optional extra "
+                    "(pip install -r requirements-beats.txt) or turn off "
+                    "'Force neural beats' to allow the librosa fallback.")
+            print(f"      ⚠️  Neural backend unavailable, using librosa grid: {reason}")
             _notify_console(console_callback, 1,
-                            f"Neural backend unavailable; using librosa grid ({neural['notes']})")
+                            f"Neural backend unavailable; using librosa grid ({reason})")
         print("   🥁 Step 1: Detecting stable beat grid...")
         beat_times, tempo, beat_frames, onset_env = detect_master_beat_grid(y_percussive, sr, cfg)
 
@@ -577,6 +591,7 @@ def analyze_beats_auto(audio_file: str, start_time: float = 0.0,
         "auto_style": "audio_visual_rhythmic_gmv_amv",
         "neural_beats": {
             "enabled": bool(enable_neural_beats),
+            "forced": neural_forced,
             "used": bool(neural["used"]),
             "backend": neural.get("backend", "unavailable"),
             "refined": bool(neural.get("refined", False)),

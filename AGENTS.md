@@ -118,6 +118,17 @@ Health: `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:12000/`
     signatures), passed through `process_video → _render_video_job →
     _process_video_impl`, restored on resume from the job record, and included
     in `render_jobs.beat_cache_key` so toggling it re-plans.
+  - **Force neural beats** (`force_neural_beats`, checkbox right after the
+    neural one) makes a requested-but-unavailable backend a hard error instead
+    of a silent librosa fallback: `analyze_beats_auto` raises `RuntimeError`
+    when `force_neural_beats and enable_neural_beats` and the neural grid did
+    not run. It is a separate cache-key component (`|forceneural=`) and job
+    field, and appears in the final report as `Beat detection: … ⚠️ (forced,
+    neural requested but unused: …)`.
+  - `ui_content.format_beat_detection_line(beat_info["neural_beats"])` is the
+    single source of the one-line detector report; it is printed both in the
+    final success box (`get_success_message_auto(..., neural_beats=…)`) and to
+    the live console (`console_logger.line(...)` in `gui._render_video_job`).
   - Optional dep in `requirements-beats.txt` (torch/huggingface_hub/
     safetensors); it is **not** in `requirements-render.txt` because the Render
     free plan is 512 MB. `tests/test_beat_models.py` builds random-weight

@@ -250,15 +250,35 @@ def _format_auto_section_summary(sections_info):
     return "\n".join(lines)
 
 
+def format_beat_detection_line(neural_beats) -> str:
+    """One-line report of which beat detector produced the cut grid."""
+    nb = neural_beats or {}
+    if nb.get("used"):
+        backend = nb.get("backend", "tcn")
+        label = {
+            "tcn+refiner": "🎵 Neural TCN + Transformer refiner",
+            "tcn": "🎵 Neural TCN (refiner not applied)",
+        }.get(backend, f"🎵 Neural ({backend})")
+        downbeats = "real downbeat grid" if nb.get("refined") else "4/4 fallback"
+        return f"Beat detection: {label} [{downbeats}]"
+    if nb.get("enabled"):
+        reason = nb.get("notes") or "backend unavailable"
+        prefix = "forced, " if nb.get("forced") else ""
+        return f"Beat detection: librosa beat_track ⚠️ ({prefix}neural requested but unused: {reason})"
+    return "Beat detection: librosa beat_track (neural detection off)"
+
+
 def get_success_message_auto(total_cuts, total_beats, tempo, sections_info,
                             python_str, cuda_str, max_threads, cpu_count,
                             parallel_workers, gpu_info, encoder_info,
                             codec_info, fps_info, filename, audio_info,
                             audio_duration=None, output_fps=None,
-                            total_processing_seconds=None, processing_label=None):
+                            total_processing_seconds=None, processing_label=None,
+                            neural_beats=None):
     """Success message for Auto mode. Compatible with Auto Mode V1/V2/V3/V3.2."""
 
     section_summary = _format_auto_section_summary(sections_info)
+    beat_detection_line = format_beat_detection_line(neural_beats)
     try:
         audio_duration_f = float(audio_duration)
     except Exception:
@@ -281,6 +301,7 @@ Video processing: {processing_text}
 Total cuts: {total_cuts}
 Audio duration: {audio_duration_f:.2f} seconds
 Output FPS: {fps_text}
+{beat_detection_line}
 {total_beats} beats detected at {tempo:.1f} BPM
 
 {section_summary}
@@ -409,6 +430,13 @@ INFO_NEURAL_BEATS = (
     "the beats, then a Transformer refiner corrects phase drift and supplies a "
     "real downbeat (bar) grid. Requires the optional extra in requirements-beats.txt; "
     "if it is not installed the render falls back to the standard beat tracker."
+)
+LABEL_FORCE_NEURAL_BEATS = "⛔ Force neural beats (no librosa fallback)"
+INFO_FORCE_NEURAL_BEATS = (
+    "When on, a render that requested neural beats but could not run them stops "
+    "with an error instead of silently falling back to the librosa tracker. Use "
+    "this to be certain the neural grid was applied. The final report always "
+    "names the detector that was used either way."
 )
 LABEL_BURN_LYRICS = "🔥 Burn lyrics into the video (optional)"
 INFO_BURN_LYRICS = (

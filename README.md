@@ -235,6 +235,20 @@ pip install -r requirements-beats.txt
 Without it the checkbox stays disabled and Auto Mode uses the librosa grid, so
 nothing breaks on a box with no torch.
 
+Tick **Force neural beats** to turn a missing backend into a hard error instead
+of a quiet fallback — the render stops rather than shipping a librosa-grid cut
+plan. Either way the final report names the detector that was actually used:
+
+```text
+Beat detection: 🎵 Neural TCN + Transformer refiner [real downbeat grid]
+```
+
+or, when it fell back:
+
+```text
+Beat detection: librosa beat_track ⚠️ (neural requested but unused: PyTorch not installed)
+```
+
 ### Stage 2 - Energy and rhythm
 
 Builds beat-synchronous curves for:

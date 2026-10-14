@@ -224,7 +224,8 @@ def _file_signature(path: str) -> str:
 def beat_cache_key(audio_file: str, video_files: List[str],
                    qwen_enabled: bool, min_shot_seconds: float = 2.0,
                    onset_snap_strength: float = 1.0,
-                   neural_beats: bool = False) -> str:
+                   neural_beats: bool = False,
+                   force_neural_beats: bool = False) -> str:
     sig = _file_signature(audio_file)
     for v in (video_files or []):
         sig += "|" + _file_signature(v)
@@ -235,6 +236,8 @@ def beat_cache_key(audio_file: str, video_files: List[str],
     sig += f"|snap={float(onset_snap_strength):.2f}"
     # The neural grid replaces the librosa grid entirely.
     sig += f"|neural={int(bool(neural_beats))}"
+    # Forcing neural beats changes whether a fallback grid is acceptable.
+    sig += f"|forceneural={int(bool(force_neural_beats))}"
     return hashlib.sha1(sig.encode("utf-8", "ignore")).hexdigest()[:20]
 
 
