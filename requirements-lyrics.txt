@@ -5,8 +5,10 @@
 # transcribe an audio track on its own.
 #
 # faster-whisper is the recommended CPU-friendly backend (CTranslate2, no
-# PyTorch). The Whisper model weights are downloaded on first use; pick a size
-# with BEATSYNC_WHISPER_MODEL (tiny/base/small/medium/large-v3).
+# PyTorch). The Whisper model weights are downloaded on first use. The default
+# is large-v3 (highest accuracy, best for Indic languages); pick a size with
+# BEATSYNC_WHISPER_MODEL (tiny/base/small/medium/large-v3) and the numeric
+# precision with BEATSYNC_WHISPER_COMPUTE (int8 default, float32 for max fidelity).
 faster-whisper>=1.0
 
 # Alternatives (install at most one):

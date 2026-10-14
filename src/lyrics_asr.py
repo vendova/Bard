@@ -14,7 +14,9 @@ paste lyrics by hand. Install one with, e.g.::
 
     pip install -r requirements-lyrics.txt   # faster-whisper
 
-Model size is chosen with ``BEATSYNC_WHISPER_MODEL`` (default ``base``).
+Model size is chosen with ``BEATSYNC_WHISPER_MODEL`` (default ``large-v3`` —
+the highest-accuracy multilingual model, best for Indian languages). Smaller
+models (``tiny``/``base``/``small``/``medium``) trade accuracy for speed.
 """
 
 from __future__ import annotations
@@ -26,6 +28,9 @@ import tempfile
 from typing import Dict, List, Optional
 
 _BACKEND_ORDER = ("faster_whisper", "whisper", "vosk")
+
+# Whisper model cache so repeated transcribes do not reload weights.
+_MODEL_CACHE: Dict[str, object] = {}
 
 
 def available_backend() -> Optional[str]:
@@ -41,7 +46,13 @@ def is_available() -> bool:
 
 
 def _model_size() -> str:
-    return os.environ.get("BEATSYNC_WHISPER_MODEL", "base").strip() or "base"
+    return os.environ.get("BEATSYNC_WHISPER_MODEL", "large-v3").strip() or "large-v3"
+
+
+def _compute_type() -> str:
+    # int8 is the CPU-friendly default and keeps good accuracy; override with
+    # BEATSYNC_WHISPER_COMPUTE=float32 for maximum fidelity (much slower).
+    return os.environ.get("BEATSYNC_WHISPER_COMPUTE", "int8").strip() or "int8"
 
 
 def transcribe(audio_file: str, language: Optional[str] = None,
@@ -65,13 +76,43 @@ def transcribe(audio_file: str, language: Optional[str] = None,
     return _transcribe_vosk(audio_file, language)
 
 
+def _decode_pcm(audio_file: str) -> "object":
+    """Decode any media to 16 kHz mono float32 via FFmpeg.
+
+    faster-whisper's built-in loader uses PyAV, whose API drifts between
+    releases; decoding with FFmpeg directly keeps us independent of that and
+    matches the FFmpeg binary the rest of the app already resolves.
+    """
+    import numpy as np
+
+    from media_paths import resolve_ffmpeg  # type: ignore
+
+    ffmpeg, _ = resolve_ffmpeg()  # type: ignore
+    cmd = [
+        ffmpeg, "-v", "error", "-nostdin", "-i", audio_file,
+        "-f", "f32le", "-ac", "1", "-ar", "16000", "-",
+    ]
+    proc = subprocess.run(cmd, capture_output=True)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "Audio decode failed: " + (proc.stderr.decode("utf-8", "ignore")[-300:])
+        )
+    return np.frombuffer(proc.stdout, dtype="<f4").astype("float32")
+
+
 def _transcribe_faster_whisper(audio_file: str, language: Optional[str],
                                model_size: str) -> List[Dict[str, object]]:
     from faster_whisper import WhisperModel
 
-    model = WhisperModel(model_size, device="cpu", compute_type="int8")
+    key = f"{model_size}:{_compute_type()}"
+    model = _MODEL_CACHE.get(key)
+    if model is None:
+        model = WhisperModel(model_size, device="cpu", compute_type=_compute_type())
+        _MODEL_CACHE[key] = model
+    audio = _decode_pcm(audio_file)
     segments, _info = model.transcribe(
-        audio_file, language=language or None, vad_filter=True,
+        audio, language=language or None, vad_filter=True,
+        condition_on_previous_text=False, beam_size=5,
     )
     return [
         {"start": float(s.start), "end": float(s.end), "text": (s.text or "").strip()}
