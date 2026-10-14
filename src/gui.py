@@ -711,7 +711,8 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
                        export_timeline: bool = False,
                        sync_sources: bool = False,
                        min_shot_seconds: float = 2.0,
-                       onset_snap_strength: float = 1.0) -> StatusResult:
+                       onset_snap_strength: float = 1.0,
+                       whole_song: bool = False) -> StatusResult:
     total_started = time.perf_counter()
     try:
         parallel_workers = PARALLEL_WORKERS
@@ -1006,6 +1007,7 @@ def _process_video_impl(audio_file: str, video_files: VideoFilesInput,
             timeline_dir=session_dir,
             scene_cuts_by_file=_scene_cuts_by_file or None,
             sync_offsets=_sync_offsets or None,
+            whole_song=whole_song,
         )
 
         # ── Lyrics overlay ─────────────────────────────────────────────
@@ -1338,14 +1340,15 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
                  sync_sources: bool = False,
                  min_shot_seconds: float = 2.0,
                  onset_snap_strength: float = 1.0,
+                 whole_song: bool = False,
                  *,
                  regenerate: bool = False,
                  resume_job_id: str | None = None,
                  ) -> Iterator[StatusResult]:
     # NOTE: regenerate/resume_job_id are keyword-only. They are never bound to
     # Gradio inputs — the shared input list goes straight from sync_sources to
-    # onset_snap_slider — so keeping them positional would insert two extra slots
-    # and shift every bound value from overlay_url onward.
+    # onset_snap_slider/whole_song_enabled — so keeping them positional would
+    # insert two extra slots and shift every bound value from overlay_url onward.
     status_queue: queue.Queue[str | None] = queue.Queue()
     result_queue: queue.Queue[StatusResult] = queue.Queue(maxsize=1)
     log_lines: list[str] = []
@@ -1371,7 +1374,7 @@ def process_video(audio_file: str, video_files: VideoFilesInput,
             qwen_semantics, draft_mode, youtube_url, overlay_url,
             stabilize, stabilize_smoothing, interpolate, interpolate_fps,
             rife, remove_dead_space, export_timeline, sync_sources,
-            min_shot_seconds, onset_snap_strength,
+            min_shot_seconds, onset_snap_strength, whole_song,
             regenerate=regenerate, resume_job_id=resume_job_id,
         )
     finally:
@@ -1422,6 +1425,7 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                  sync_sources: bool = False,
                  min_shot_seconds: float = 2.0,
                  onset_snap_strength: float = 1.0,
+                 whole_song: bool = False,
                  *,
                  regenerate: bool = False,
                  resume_job_id: str | None = None,
@@ -1450,6 +1454,8 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                 min_shot_seconds = float(rec["min_shot_seconds"])
             if rec.get("onset_snap_strength") is not None:
                 onset_snap_strength = float(rec["onset_snap_strength"])
+            if rec.get("whole_song") is not None:
+                whole_song = bool(rec["whole_song"])
             if rec.get("seed"):
                 session_state["_resume_seed"] = rec["seed"]
             _jobs.update_job(job_id, status=_jobs.STATUS_RUNNING, stage="resuming")
@@ -1467,6 +1473,7 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                 "smart_sync": smart_sync,
                 "min_shot_seconds": float(min_shot_seconds),
                 "onset_snap_strength": float(onset_snap_strength),
+                "whole_song": bool(whole_song),
             })
             try:
                 persisted = _jobs.persist_inputs(job_id, audio_file, video_files or [], zip_file)
@@ -1591,6 +1598,7 @@ def _render_video_job(audio_file: str, video_files: VideoFilesInput,
                     sync_sources=sync_sources,
                     min_shot_seconds=min_shot_seconds,
                     onset_snap_strength=onset_snap_strength,
+                    whole_song=whole_song,
                 )
         except Exception as e:
             console_logger.line(f"Error: {e}")
@@ -1676,6 +1684,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
                       sync_sources: bool = False,
                       min_shot_seconds: float = 2.0,
                       onset_snap_strength: float = 1.0,
+                      whole_song: bool = False,
                       ) -> Iterator[StatusResult]:
     """Re-render with updated settings, reusing cached beat analysis.
 
@@ -1703,6 +1712,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
             export_timeline=export_timeline, sync_sources=sync_sources,
             min_shot_seconds=min_shot_seconds,
             onset_snap_strength=onset_snap_strength,
+            whole_song=whole_song,
             regenerate=False, resume_job_id=None,
         )
         return
@@ -1728,6 +1738,7 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
         export_timeline=export_timeline, sync_sources=sync_sources,
         min_shot_seconds=min_shot_seconds,
         onset_snap_strength=onset_snap_strength,
+        whole_song=whole_song,
         regenerate=True, resume_job_id=None,
     )
 
@@ -1892,6 +1903,7 @@ def create_ui() -> gr.Blocks:
                     stabilize_smoothing = gr.Slider(2, 40, value=10, step=1, label=LABEL_STABILIZE_SMOOTHING, info=INFO_STABILIZE_SMOOTHING)
                     min_shot_slider = gr.Slider(0.5, 6.0, value=2.0, step=0.25, label=LABEL_MIN_SHOT, info=INFO_MIN_SHOT)
                     onset_snap_slider = gr.Slider(0.0, 1.0, value=1.0, step=0.1, label=LABEL_ONSET_SNAP, info=INFO_ONSET_SNAP)
+                    whole_song_enabled = gr.Checkbox(value=False, label=LABEL_WHOLE_SONG, info=INFO_WHOLE_SONG)
 
                 with gr.Accordion(LABEL_LYRICS_SECTION, open=False):
                     lyrics_text = gr.Textbox(
@@ -2001,6 +2013,7 @@ def create_ui() -> gr.Blocks:
             sync_sources,
             min_shot_slider,
             onset_snap_slider,
+            whole_song_enabled,
         ]
         _shared_outputs = [video_output, status_output, session_state, download_btn]
 

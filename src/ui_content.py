@@ -394,6 +394,13 @@ INFO_ONSET_SNAP = (
     "1.0 = maximum lock; 0 = grid-only. Also aligns each clip's motion peak and "
     "beat flashes to the strongest accent in its shot."
 )
+LABEL_WHOLE_SONG = "🎵 Render the whole song (don't trim to footage)"
+INFO_WHOLE_SONG = (
+    "Off (default): if the music is longer than the uploaded footage, the "
+    "output is cropped to the footage length so no clip repeats to pad it. "
+    "On: keep the full music length and reuse source moments to fill it — "
+    "useful for a full-length track when you have limited clips."
+)
 LABEL_INTERPOLATE = "🎞️ Smooth frame rate (interpolation)"
 INFO_INTERPOLATE = (
     "Motion-compensated minterpolate doubles the output frame rate for buttery "

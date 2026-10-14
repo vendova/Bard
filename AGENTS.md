@@ -38,6 +38,11 @@ Health: `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:12000/`
 - **Multi-link input** (`youtube_source.parse_links` +
   `prepare_clips_from_sources`): downloads each link in turn and spreads a
   ~20-clip budget across successful sources.
+- **Whole-song render** (Smooth section → "Render the whole song"): when on,
+  `create_music_video(..., whole_song=True)` skips the footage-length crop in
+  `_resolve_duration_cap` so the output keeps the full audio length and reuses
+  source moments (`_ensure_candidate_coverage` tops up the Smart Sync candidate
+  pool). Off by default; an explicit `BEATSYNC_MAX_OUTPUT_SECONDS` still caps.
 - **Shot pacing** (`auto_mode.AutoWaveConfig.min_shot_seconds`, GUI
   "Minimum shot length"): a floor (default 2.0s) applied on top of the
   energy-based min-intervals in `analyze_beats_auto` via

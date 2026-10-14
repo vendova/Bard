@@ -177,22 +177,87 @@ def _max_output_seconds() -> float | None:
     return value if value > 0 else None
 
 
-def _resolve_duration_cap(video_files: List[str], audio_duration: float) -> float | None:
+def _resolve_duration_cap(video_files: List[str], audio_duration: float,
+                          whole_song: bool = False) -> float | None:
     """Pick the output length so the video never outruns the footage.
 
     The target is the largest length the source footage can fill. If the
     music is longer than that, the render is cropped to the footage length
     (the music is trimmed) instead of looping the same clips. An explicit
     ``BEATSYNC_MAX_OUTPUT_SECONDS`` cap is honoured too.
+
+    When ``whole_song`` is set, the music is never cropped to the footage
+    length: the render keeps the full song and reuses source moments to fill
+    it (an explicit ``BEATSYNC_MAX_OUTPUT_SECONDS`` still applies).
     """
     cap = audio_duration
-    footage = _total_footage_seconds(video_files)
-    if footage > 0:
-        cap = min(cap, footage)
+    if not whole_song:
+        footage = _total_footage_seconds(video_files)
+        if footage > 0:
+            cap = min(cap, footage)
     env_cap = _max_output_seconds()
     if env_cap:
         cap = min(cap, env_cap)
     return cap if cap < audio_duration - 1e-6 else None
+
+
+def _ensure_candidate_coverage(video_files: List[str], candidates: List[Dict],
+                               segment_count: int) -> List[Dict]:
+    """Top up the candidate pool when the edit has more segments than moments.
+
+    Smart Sync reuses source moments once the pool is exhausted. For a
+    whole-song render that pool can be far smaller than the segment count, so
+    every window would repeat several times. Adding evenly-spaced windows until
+    the pool covers the segments spreads the reuse instead. Purely additive:
+    the existing candidates keep their ids and scores.
+    """
+    if not video_files or segment_count <= 0 or len(candidates) >= segment_count:
+        return candidates
+
+    from ffmpeg_processing import get_video_duration, get_video_fps, get_video_resolution
+    from smart_sync import _hash_text
+
+    expanded = list(candidates)
+    existing = {c.get("id") for c in expanded}
+    per_video = max(2, (segment_count + len(video_files) - 1) // len(video_files))
+    for video_file in video_files:
+        try:
+            duration = max(1.0, float(get_video_duration(video_file)))
+            fps = max(1.0, float(get_video_fps(video_file)))
+            width, height = get_video_resolution(video_file)
+        except Exception:
+            duration, fps, width, height = 10.0, 30.0, 1920, 1080
+
+        num_windows = max(3, min(400, per_video))
+        seg_dur = duration / num_windows
+        base = f"cover_{_hash_text(os.path.abspath(video_file), 8)}"
+        for w_idx in range(num_windows):
+            cid = f"{base}_{w_idx:04d}"
+            if cid in existing:
+                continue
+            seg_start = seg_dur * w_idx
+            expanded.append({
+                "id": cid,
+                "video_file": os.path.abspath(video_file),
+                "source_name": os.path.basename(video_file),
+                "video_duration": duration,
+                "start": seg_start,
+                "end": min(duration, seg_start + seg_dur),
+                "duration": max(0.5, seg_dur),
+                "center": seg_start + seg_dur * 0.5,
+                "peak_time": seg_start + seg_dur * 0.5,
+                "motion": 0.5,
+                "brightness": 0.5,
+                "quality_score": 0.5,
+                "action_score": 0.5,
+                "beauty_score": 0.5,
+                "tension_score": 0.4,
+                "soft_score": 0.4,
+                "tags": ["flow"],
+                "semantic": {},
+                "ai_analyzed": False,
+            })
+    return expanded
 
 
 def _log_disk_headroom(label: str = "") -> None:
@@ -537,6 +602,7 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
                       timeline_dir: str | None = None,
                       scene_cuts_by_file: Dict | None = None,
                       sync_offsets: Dict | None = None,
+                      whole_song: bool = False,
                       ) -> str:
     """
     Creates a music video with video clips cut to detected beats.
@@ -672,14 +738,18 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
 
     # Adapt the output length to the available footage: never show the same
     # clip over and over to pad a long song. If the music outruns the source
-    # video, crop (trim) the music to the footage length instead.
+    # video, crop (trim) the music to the footage length instead — unless the
+    # user asked for the whole song, in which case source moments are reused.
     if not replay_planned and not lossless_mode:
-        cap = _resolve_duration_cap(video_files, audio_duration)
+        cap = _resolve_duration_cap(video_files, audio_duration, whole_song=whole_song)
         if cap is not None:
             print(f"✂️  Footage is shorter than the music — cropping output to "
                   f"{cap:.2f}s (music trimmed) so no clip repeats to pad the length.")
             audio_duration = cap
             end_time = start_time + cap
+    elif whole_song and not replay_planned and lossless_mode:
+        print("🎵 Whole-song render: keeping the full music length "
+              "(source moments reused to fill it).")
 
     render_info["audio_duration"] = float(audio_duration)
     
@@ -734,6 +804,9 @@ def create_music_video(audio_file: str, video_files: VideoList, beat_times: Beat
         video_analysis = (beat_info or {}).get("video_analysis") or {}
         candidates = list(video_analysis.get("candidates") or [])
         candidates = [c for c in candidates if c.get("video_file")]
+        if whole_song and candidates:
+            candidates = _ensure_candidate_coverage(
+                video_files, candidates, len(segment_durations))
 
         # Inject variation seed into smart_sync by patching _stable_rng
         import smart_sync as _ss
