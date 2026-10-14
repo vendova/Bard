@@ -32,6 +32,18 @@ _BACKEND_ORDER = ("faster_whisper", "whisper", "vosk")
 # Whisper model cache so repeated transcribes do not reload weights.
 _MODEL_CACHE: Dict[str, object] = {}
 
+# Selectable Whisper models, smallest/fastest first. large-v3 is the most
+# accurate (best for Indic languages); turbo is a good speed/accuracy balance.
+MODEL_CHOICES = [
+    ("tiny — fastest, lowest accuracy", "tiny"),
+    ("base — fast, basic accuracy", "base"),
+    ("small — balanced", "small"),
+    ("medium — high accuracy", "medium"),
+    ("large-v3 — highest accuracy (recommended)", "large-v3"),
+    ("large-v3-turbo — high accuracy, faster", "large-v3-turbo"),
+]
+DEFAULT_MODEL = "large-v3"
+
 
 def available_backend() -> Optional[str]:
     """Return the name of the first installed ASR backend, or ``None``."""
@@ -46,7 +58,7 @@ def is_available() -> bool:
 
 
 def _model_size() -> str:
-    return os.environ.get("BEATSYNC_WHISPER_MODEL", "large-v3").strip() or "large-v3"
+    return os.environ.get("BEATSYNC_WHISPER_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
 
 
 def _compute_type() -> str:
@@ -56,10 +68,12 @@ def _compute_type() -> str:
 
 
 def transcribe(audio_file: str, language: Optional[str] = None,
-               model_size: Optional[str] = None) -> List[Dict[str, object]]:
+               model_size: Optional[str] = None, progress=None) -> List[Dict[str, object]]:
     """Transcribe ``audio_file`` into ``{start, end, text}`` segments.
 
     ``language`` is an ISO code (e.g. ``"hi"``) or ``None`` to auto-detect.
+    ``progress`` is an optional ``callable(str)`` that receives live status
+    lines (model download/load, decode, per-segment progress).
     Raises ``RuntimeError`` when no backend is installed.
     """
     backend = available_backend()
@@ -70,7 +84,7 @@ def transcribe(audio_file: str, language: Optional[str] = None,
         )
     size = model_size or _model_size()
     if backend == "faster_whisper":
-        return _transcribe_faster_whisper(audio_file, language, size)
+        return _transcribe_faster_whisper(audio_file, language, size, progress)
     if backend == "whisper":
         return _transcribe_whisper(audio_file, language, size)
     return _transcribe_vosk(audio_file, language)
@@ -101,24 +115,45 @@ def _decode_pcm(audio_file: str) -> "object":
 
 
 def _transcribe_faster_whisper(audio_file: str, language: Optional[str],
-                               model_size: str) -> List[Dict[str, object]]:
+                               model_size: str, progress=None) -> List[Dict[str, object]]:
     from faster_whisper import WhisperModel
+
+    def log(msg: str) -> None:
+        if progress is not None:
+            try:
+                progress(msg)
+            except Exception:
+                pass
 
     key = f"{model_size}:{_compute_type()}"
     model = _MODEL_CACHE.get(key)
     if model is None:
+        log(f"Loading Whisper model '{model_size}' (downloads once, then cached)…")
         model = WhisperModel(model_size, device="cpu", compute_type=_compute_type())
         _MODEL_CACHE[key] = model
+    else:
+        log(f"Using cached Whisper model '{model_size}'")
+
+    log("Decoding audio to 16 kHz mono…")
     audio = _decode_pcm(audio_file)
-    segments, _info = model.transcribe(
+    log(f"Decoded {len(audio) / 16000:.1f}s of audio; transcribing…")
+
+    segments, info = model.transcribe(
         audio, language=language or None, vad_filter=True,
         condition_on_previous_text=False, beam_size=5,
     )
-    return [
-        {"start": float(s.start), "end": float(s.end), "text": (s.text or "").strip()}
-        for s in segments
-        if (s.text or "").strip()
-    ]
+    detected = getattr(info, "language", None)
+    if detected:
+        log(f"Detected speech language: {detected}")
+    out: List[Dict[str, object]] = []
+    for s in segments:
+        text = (s.text or "").strip()
+        if not text:
+            continue
+        out.append({"start": float(s.start), "end": float(s.end), "text": text})
+        log(f"  [{s.start:6.2f}s] {text[:70]}")
+    log(f"Transcribed {len(out)} line(s)")
+    return out
 
 
 def _transcribe_whisper(audio_file: str, language: Optional[str],

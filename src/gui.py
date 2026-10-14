@@ -123,6 +123,13 @@ _LOOK_CHOICES = [("🎲 Random (new look each render)", "")] + [(n, n) for n in 
 # Themes already include "None"; add 🎲 Random on top.
 _THEME_CHOICES = [("🎲 Random (new theme each render)", "")] + [(n, n) for n in _get_theme_names()]
 
+# Speech-to-text model options for "Generate LRC" (see lyrics_asr.MODEL_CHOICES).
+try:
+    from lyrics_asr import MODEL_CHOICES as _LRC_MODEL_CHOICES, DEFAULT_MODEL as _LRC_MODEL_DEFAULT
+except Exception:  # pragma: no cover - keep the UI importable without ASR
+    _LRC_MODEL_CHOICES = [("large-v3 — highest accuracy (recommended)", "large-v3")]
+    _LRC_MODEL_DEFAULT = "large-v3"
+
 from auto_mode import analyze_beats_auto
 
 
@@ -1759,15 +1766,22 @@ def regenerate_video(audio_file: str, video_files: VideoFilesInput,
     )
 
 
-def generate_lrc_output(lyrics_text, audio_file, session_state):
+def generate_lrc_output(lyrics_text, audio_file, model_size, session_state):
     """Detect the lyric language and emit a timestamped LRC (no video render).
 
     Timestamps come from the pasted LRC when present, otherwise they are
     derived from the cached beat grid or the audio duration. When the lyrics
     box is empty and a speech-to-text backend is installed, the audio is
     transcribed first.
+
+    This is a streaming generator so the "Live Processing Log" updates while
+    the (potentially slow) model download/transcription runs. It yields the
+    same 4-tuple shape as ``process_video``:
+    ``(video, log, session_state, download_button_update)``.
     """
     import os
+    import queue
+    import threading
     import lyrics_engine
 
     session_state = session_state or {}
@@ -1792,28 +1806,109 @@ def generate_lrc_output(lyrics_text, audio_file, session_state):
     except OSError:
         out_dir = "/tmp"
 
-    artifact = lyrics_engine.build_lyrics_artifact(
-        lyrics_text=lyrics_text or "",
-        audio_duration=audio_duration,
-        beat_times=beat_times,
-        audio_file=local_audio,
-        output_dir=out_dir,
-    )
+    log_lines: list[str] = []
+    log_lines.append("📝 Generate LRC — starting…")
+    if lyrics_text and lyrics_text.strip():
+        log_lines.append(f"Parsing pasted lyrics ({len(lyrics_text)} chars)")
+    elif local_audio:
+        backend = None
+        try:
+            import lyrics_asr
+            backend = lyrics_asr.available_backend()
+        except Exception:
+            backend = None
+        if backend:
+            log_lines.append(
+                f"Auto-transcribing with {backend} ({model_size or 'default'}); "
+                "this can take a while on CPU…"
+            )
+        else:
+            log_lines.append("⚠️ No speech-to-text backend installed.")
+    else:
+        log_lines.append("⚠️ No lyrics pasted and no audio available to transcribe.")
 
-    if not artifact["lines"]:
-        note = artifact["note"] or (
+    def render_feed() -> str:
+        return "\n".join(log_lines[-60:])
+
+    # Run the work in a worker thread so progress lines can stream to the UI.
+    msg_q: "queue.Queue[str | None]" = queue.Queue()
+    result_box: dict = {}
+
+    def worker() -> None:
+        try:
+            artifact = lyrics_engine.build_lyrics_artifact(
+                lyrics_text=lyrics_text or "",
+                audio_duration=audio_duration,
+                beat_times=beat_times,
+                audio_file=local_audio,
+                output_dir=out_dir,
+                model_size=model_size or None,
+                progress=msg_q.put,
+            )
+            result_box["artifact"] = artifact
+        except Exception as exc:
+            result_box["error"] = exc
+        finally:
+            msg_q.put(None)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    yield None, render_feed(), session_state, gr.update(visible=False)
+
+    while True:
+        msg = msg_q.get()
+        if msg is None:
+            break
+        log_lines.append(msg)
+        yield None, render_feed(), session_state, gr.update(visible=False)
+
+    thread.join()
+
+    if "error" in result_box:
+        log_lines.append(f"❌ Auto-transcription failed: {result_box['error']}")
+        yield None, render_feed(), session_state, gr.update(visible=False)
+        return
+
+    artifact = result_box.get("artifact") or {}
+    if not artifact.get("lines"):
+        note = artifact.get("note") or (
             "No lyrics found. Paste lyrics, or install a speech-to-text "
             "backend to auto-transcribe from the audio."
         )
-        return f"⚠️ {note}", "", None
+        log_lines.append(f"⚠️ {note}")
+        yield None, render_feed(), session_state, gr.update(visible=False)
+        return
 
     script = artifact["script"]
     flag = " (Indic language detected)" if artifact["indic"] else ""
-    lang_line = f"{artifact['language']}{flag} · {len(artifact['lines'])} lines · source: {artifact['source']}"
+    lang_line = (f"{artifact['language']}{flag} · {len(artifact['lines'])} lines "
+                 f"· source: {artifact['source']}")
     if artifact["note"]:
         lang_line += f" · {artifact['note']}"
+    log_lines.append(f"✅ {lang_line}")
+    log_lines.append(f"✅ LRC written: {artifact['lrc_path']}")
 
-    return lang_line, artifact["lrc_text"], (artifact["lrc_path"] or None)
+    session_state = dict(session_state)
+    session_state["last_lrc"] = {
+        "language": lang_line,
+        "lrc_text": artifact["lrc_text"],
+        "lrc_path": artifact["lrc_path"] or None,
+    }
+
+    # Store the LRC text in the log feed too, so the log panel shows something
+    # useful even though the dedicated boxes are updated by the .then() step.
+    log_lines.append("")
+    log_lines.append("----- timed lyrics (LRC) -----")
+    log_lines.extend((artifact["lrc_text"] or "").splitlines())
+    yield None, render_feed(), session_state, gr.update(visible=False)
+
+
+def _apply_lrc_result(session_state):
+    """Fill the dedicated LRC boxes from the streamed result in session_state."""
+    last = (session_state or {}).get("last_lrc") or {}
+    if not last:
+        return "", "", None
+    return last.get("language", ""), last.get("lrc_text", ""), last.get("lrc_path")
 
 
 def cleanup_on_startup():
@@ -2021,6 +2116,12 @@ def create_ui() -> gr.Blocks:
                     burn_lyrics_enabled = gr.Checkbox(
                         value=False, label=LABEL_BURN_LYRICS, info=INFO_BURN_LYRICS,
                     )
+                    lrc_model = gr.Dropdown(
+                        choices=_LRC_MODEL_CHOICES,
+                        value=_LRC_MODEL_DEFAULT,
+                        label=LABEL_LRC_MODEL,
+                        info=INFO_LRC_MODEL,
+                    )
                     lrc_btn = gr.Button(LABEL_LRC_BUTTON, variant='secondary')
                     lrc_language = gr.Textbox(
                         label=LABEL_LRC_LANGUAGE, interactive=False, lines=1,
@@ -2140,10 +2241,16 @@ def create_ui() -> gr.Blocks:
         )
 
         # "Generate LRC" — detect the language and emit timestamped lyrics
-        # without rendering. Output first; burning onto the video is separate.
+        # without rendering. Streams live progress to the processing log, then
+        # fills the dedicated LRC boxes from the result in session_state.
         lrc_btn.click(
             fn=generate_lrc_output,
-            inputs=[lyrics_text, audio_input, session_state],
+            inputs=[lyrics_text, audio_input, lrc_model, session_state],
+            outputs=[video_output, status_output, session_state, download_btn],
+            show_progress='hidden',
+        ).then(
+            fn=_apply_lrc_result,
+            inputs=[session_state],
             outputs=[lrc_language, lrc_output, lrc_file],
             show_progress='hidden',
         )

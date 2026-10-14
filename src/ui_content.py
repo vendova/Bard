@@ -408,6 +408,14 @@ INFO_BURN_LYRICS = (
     "captions into the video using the selected font combo."
 )
 LABEL_LRC_BUTTON = "📝 Generate LRC (detect language + timestamps)"
+LABEL_LRC_MODEL = "🧠 Speech-to-text model"
+INFO_LRC_MODEL = (
+    "Which Whisper model to use when auto-transcribing (empty lyrics box). "
+    "tiny/base are fastest but least accurate; small/medium are balanced; "
+    "large-v3 is the most accurate (best for Indic languages) and "
+    "large-v3-turbo is nearly as accurate but faster. Models download once "
+    "on first use, then are cached. Ignored when you paste lyrics yourself."
+)
 LABEL_LRC_LANGUAGE = "Detected language / script"
 LABEL_LRC_OUTPUT = "Timed lyrics (LRC)"
 INFO_LRC_OUTPUT = (

@@ -251,6 +251,8 @@ def build_lyrics_artifact(
     title: str = "",
     language: Optional[str] = None,
     allow_asr: bool = True,
+    model_size: Optional[str] = None,
+    progress=None,
 ) -> Dict[str, object]:
     """Detect the language, produce timed lyric lines, and write an LRC file.
 
@@ -258,6 +260,9 @@ def build_lyrics_artifact(
     speech-to-text backend (see :mod:`lyrics_asr`) is used to transcribe
     ``audio_file`` into timed lines. Otherwise the pasted lyrics are parsed
     (LRC tags honoured, plain text auto-distributed across the song).
+
+    ``model_size`` selects the Whisper model (e.g. ``"small"``, ``"large-v3"``).
+    ``progress`` is an optional ``callable(str)`` for live status lines.
 
     Returns a dict with ``lines``, ``lrc_text``, ``lrc_path``, ``language``,
     ``script``, ``indic``, ``source`` ("lyrics" | "asr" | "none") and ``note``.
@@ -273,10 +278,13 @@ def build_lyrics_artifact(
         source = "lyrics" if lines else "none"
     elif allow_asr and audio_file and lyrics_asr.is_available():
         try:
-            segments = lyrics_asr.transcribe(audio_file, language=language)
+            segments = lyrics_asr.transcribe(audio_file, language=language,
+                                             model_size=model_size,
+                                             progress=progress)
             lines = lines_from_segments(segments)
             source = "asr" if lines else "none"
-            note = f"Transcribed with {lyrics_asr.available_backend()}"
+            note = (f"Transcribed with {lyrics_asr.available_backend()} "
+                    f"({model_size or lyrics_asr.DEFAULT_MODEL})")
         except Exception as exc:                     # never fail the render
             note = f"Auto-transcription failed: {exc}"
     elif allow_asr and audio_file:
